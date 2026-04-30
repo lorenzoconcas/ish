@@ -81,9 +81,61 @@
         b 1b
 .endm
 
+.macro do_cmpxchg64
+    .gadget cmpxchg64_mem
+        write_prep 64, cmpxchg64_mem
+        ldr x8, [_xaddr]
+        setf_a64 xax, x8
+        subs x9, xax, x8
+        cset w10, vs
+        strb w10, [_cpu, CPU_of]
+        cset w10, cc
+        strb w10, [_cpu, CPU_cf]
+        setf_zsp x, val=x9
+        csel xax, x8, xax, ne
+        csel x8, _xtmp, x8, eq
+        str x8, [_xaddr]
+        write_done 64, cmpxchg64_mem
+        gret 1
+        write_bullshit 64, cmpxchg64_mem
+
+    .gadget atomic_cmpxchg64_mem
+        write_prep 64, atomic_cmpxchg64_mem
+        mov x14, xax
+        ldr x13, [_xaddr]
+    1:
+        mov x8, x13
+        setf_a64 xax, x8
+        subs x9, xax, x8
+        cset w10, vs
+        strb w10, [_cpu, CPU_of]
+        cset w10, cc
+        strb w10, [_cpu, CPU_cf]
+        setf_zsp x, val=x9
+        csel xax, x8, xax, ne
+        csel x8, _xtmp, x8, eq
+
+    2:
+        ldaxr x11, [_xaddr]
+        cmp x11, x13
+        b.ne 3f
+        stlxr w11, x8, [_xaddr]
+        cbnz w11, 2b
+
+        write_done 64, atomic_cmpxchg64_mem
+        gret 1
+        write_bullshit 64, atomic_cmpxchg64_mem
+    3:
+        dmb ish
+        mov x13, x11
+        mov xax, x14
+        b 1b
+.endm
+
 .irp size, SIZE_LIST
     ss \size, do_cmpxchg
 .endr
+do_cmpxchg64
 .gadget_array cmpxchg
 .gadget_array atomic_cmpxchg
 

@@ -1,4 +1,6 @@
 #include "kernel/calls.h"
+#include "kernel/cpu.h"
+#include "kernel/guest.h"
 
 struct user_desc {
     dword_t entry_number;
@@ -13,6 +15,11 @@ struct user_desc {
 };
 
 int task_set_thread_area(struct task *task, addr_t u_info) {
+    if (task->mm->arch == GUEST_ARCH_X86_64) {
+        task_cpu_set_fs_base(task, u_info);
+        return 0;
+    }
+
     struct user_desc info;
     if (user_get_task(task, u_info, info))
         return _EFAULT;
@@ -20,7 +27,7 @@ int task_set_thread_area(struct task *task, addr_t u_info) {
     // On a real system, TLS works by creating a special segment pointing to
     // the TLS buffer. Our shitty emulation of that is to ignore attempts to
     // modify GS and add this address to any memory reference that uses GS.
-    task->cpu.tls_ptr = info.base_addr;
+    task_cpu_set_compat_tls_base(task, info.base_addr);
 
     if (info.entry_number == (unsigned) -1) {
         info.entry_number = 0xc;
@@ -32,7 +39,7 @@ int task_set_thread_area(struct task *task, addr_t u_info) {
 }
 
 int sys_set_thread_area(addr_t u_info) {
-    STRACE("set_thread_area(0x%x)", u_info);
+    STRACE("set_thread_area(%#llx)", (unsigned long long) u_info);
     return task_set_thread_area(current, u_info);
 }
 

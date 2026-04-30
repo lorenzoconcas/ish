@@ -1,2 +1,4 @@
 #include "StaticLib.xcconfig"
+
+GCC_PREPROCESSOR_DEFINITIONS = $(inherited) ISH_GUEST_ARCH_X86_64=$(ISH_GUEST_ARCH_X86_64)
 HEADER_SEARCH_PATHS = $(inherited) $(SRCROOT) $(SRCROOT)/deps/libarchive/libarchive

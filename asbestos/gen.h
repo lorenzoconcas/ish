@@ -8,6 +8,7 @@ struct gen_state {
     addr_t ip;
     addr_t orig_ip;
     unsigned long orig_ip_extra;
+    bool long_mode;
     struct fiber_block *block;
     unsigned size;
     unsigned capacity;

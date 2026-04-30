@@ -30,6 +30,7 @@ int must_check user_write_string(addr_t addr, const char *buf);
 
 // process lifecycle
 dword_t sys_clone(dword_t flags, addr_t stack, addr_t ptid, addr_t tls, addr_t ctid);
+dword_t sys_clone_x86_64(dword_t flags, addr_t stack, addr_t ptid, addr_t ctid, addr_t tls);
 dword_t sys_fork(void);
 dword_t sys_vfork(void);
 dword_t sys_execve(addr_t file, addr_t argv, addr_t envp);
@@ -51,6 +52,7 @@ addr_t sys_brk(addr_t new_brk);
 #define MMAP_ANONYMOUS 0x20
 addr_t sys_mmap(addr_t args_addr);
 addr_t sys_mmap2(addr_t addr, dword_t len, dword_t prot, dword_t flags, fd_t fd_no, dword_t offset);
+addr_t sys_mmap64(addr_t addr, dword_t len, dword_t prot, dword_t flags, fd_t fd_no, dword_t offset);
 int_t sys_munmap(addr_t addr, uint_t len);
 int_t sys_mprotect(addr_t addr, uint_t len, int_t prot);
 int_t sys_mremap(addr_t addr, dword_t old_len, dword_t new_len, dword_t flags);
@@ -66,7 +68,7 @@ int_t sys_msync(addr_t addr, dword_t len, int_t flags);
 #define LOCK_UN_ 8
 struct iovec_ {
     addr_t base;
-    uint_t len;
+    qword_t len;
 };
 dword_t sys_read(fd_t fd_no, addr_t buf_addr, dword_t size);
 dword_t sys_readv(fd_t fd_no, addr_t iovec_addr, dword_t iovec_count);
@@ -74,6 +76,7 @@ dword_t sys_write(fd_t fd_no, addr_t buf_addr, dword_t size);
 dword_t sys_writev(fd_t fd_no, addr_t iovec_addr, dword_t iovec_count);
 dword_t sys__llseek(fd_t f, dword_t off_high, dword_t off_low, addr_t res_addr, dword_t whence);
 dword_t sys_lseek(fd_t f, dword_t off, dword_t whence);
+addr_t sys_lseek_x86_64(fd_t f, off_t_ off, dword_t whence);
 dword_t sys_pread(fd_t f, addr_t buf_addr, dword_t buf_size, off_t_ off);
 dword_t sys_pwrite(fd_t f, addr_t buf_addr, dword_t size, off_t_ off);
 dword_t sys_ioctl(fd_t f, dword_t cmd, dword_t arg);
@@ -94,8 +97,11 @@ struct pollfd_ {
 };
 dword_t sys_poll(addr_t fds, dword_t nfds, int_t timeout);
 dword_t sys_select(fd_t nfds, addr_t readfds_addr, addr_t writefds_addr, addr_t exceptfds_addr, addr_t timeout_addr);
+dword_t sys_select_x86_64(fd_t nfds, addr_t readfds_addr, addr_t writefds_addr, addr_t exceptfds_addr, addr_t timeout_addr);
 dword_t sys_pselect(fd_t nfds, addr_t readfds_addr, addr_t writefds_addr, addr_t exceptfds_addr, addr_t timeout_addr, addr_t sigmask_addr);
+dword_t sys_pselect_x86_64(fd_t nfds, addr_t readfds_addr, addr_t writefds_addr, addr_t exceptfds_addr, addr_t timeout_addr, addr_t sigmask_addr);
 dword_t sys_ppoll(addr_t fds, dword_t nfds, addr_t timeout_addr, addr_t sigmask_addr, dword_t sigsetsize);
+dword_t sys_ppoll_x86_64(addr_t fds, dword_t nfds, addr_t timeout_addr, addr_t sigmask_addr, dword_t sigsetsize);
 fd_t sys_epoll_create(int_t flags);
 fd_t sys_epoll_create0(void);
 int_t sys_epoll_ctl(fd_t epoll, int_t op, fd_t fd, addr_t event_addr);
@@ -131,6 +137,10 @@ dword_t sys_stat64(addr_t path_addr, addr_t statbuf_addr);
 dword_t sys_lstat64(addr_t path_addr, addr_t statbuf_addr);
 dword_t sys_fstat64(fd_t fd_no, addr_t statbuf_addr);
 dword_t sys_fstatat64(fd_t at, addr_t path_addr, addr_t statbuf_addr, dword_t flags);
+dword_t sys_stat_x86_64(addr_t path_addr, addr_t statbuf_addr);
+dword_t sys_lstat_x86_64(addr_t path_addr, addr_t statbuf_addr);
+dword_t sys_fstat_x86_64(fd_t fd_no, addr_t statbuf_addr);
+dword_t sys_newfstatat_x86_64(fd_t at, addr_t path_addr, addr_t statbuf_addr, dword_t flags);
 dword_t sys_fchmod(fd_t f, dword_t mode);
 dword_t sys_fchmodat(fd_t at_f, addr_t path_addr, dword_t mode);
 dword_t sys_chmod(addr_t path_addr, dword_t mode);
@@ -158,6 +168,8 @@ dword_t sys_statfs(addr_t path_addr, addr_t buf_addr);
 dword_t sys_statfs64(addr_t path_addr, dword_t buf_size, addr_t buf_addr);
 dword_t sys_fstatfs(fd_t f, addr_t buf_addr);
 dword_t sys_fstatfs64(fd_t f, addr_t buf_addr);
+dword_t sys_statfs_x86_64(addr_t path_addr, addr_t buf_addr);
+dword_t sys_fstatfs_x86_64(fd_t f, addr_t buf_addr);
 dword_t sys_statx(fd_t at_f, addr_t path_addr, int_t flags, uint_t mask, addr_t statx_addr);
 
 #define MS_READONLY_ (1 << 0)
@@ -255,6 +267,6 @@ dword_t sys_getrandom(addr_t buf_addr, dword_t len, dword_t flags);
 int_t sys_syslog(int_t type, addr_t buf_addr, int_t len);
 int_t sys_ipc(uint_t call, int_t first, int_t second, int_t third, addr_t ptr, int_t fifth);
 
-typedef int (*syscall_t)(dword_t, dword_t, dword_t, dword_t, dword_t, dword_t);
+typedef addr_t (*syscall_t)(addr_t, addr_t, addr_t, addr_t, addr_t, addr_t);
 
 #endif

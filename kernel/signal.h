@@ -148,6 +148,7 @@ struct sighand *sighand_copy(struct sighand *sighand);
 void sighand_release(struct sighand *sighand);
 
 dword_t sys_rt_sigaction(dword_t signum, addr_t action_addr, addr_t oldaction_addr, dword_t sigset_size);
+dword_t sys_rt_sigaction_x86_64(dword_t signum, addr_t action_addr, addr_t oldaction_addr, dword_t sigset_size);
 dword_t sys_sigaction(dword_t signum, addr_t action_addr, addr_t oldaction_addr);
 dword_t sys_rt_sigreturn(void);
 dword_t sys_sigreturn(void);

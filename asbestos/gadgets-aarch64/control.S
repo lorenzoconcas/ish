@@ -18,6 +18,25 @@
     b fiber_ret_chain
     write_bullshit 32, call
 
+.gadget call64
+    // save return address
+    sub _xaddr, xsp, 8
+    write_prep 64, call64
+    ldr x8, [_ip, 16]
+    str x8, [_xaddr]
+    // push stack pointer
+    sub xsp, xsp, 8
+    // save ip-to-arguments to return cache
+    lsr x12, x8, 4
+    and x12, x12, 0xfff
+    write_done 64, call64 // clobbers w8
+    add x13, _cpu, LOCAL_ret_cache
+    str _ip, [x13, x12, lsl 3]
+    // jump to target
+    ldr _ip, [_ip, 32]
+    b fiber_ret_chain
+    write_bullshit 64, call64
+
 .gadget call_indir
     // save return address
     sub _addr, esp, 4
@@ -35,6 +54,25 @@
     mov eip, _tmp
     b fiber_ret
     write_bullshit 32, call_indir
+
+.gadget call_indir64
+    // save return address
+    sub _xaddr, xsp, 8
+    write_prep 64, call_indir64
+    ldr x8, [_ip, 16]
+    str x8, [_xaddr]
+    // push stack pointer
+    sub xsp, xsp, 8
+    // save ip-to-arguments to return cache
+    lsr x12, x8, 4
+    and x12, x12, 0xfff
+    write_done 64, call_indir64 // clobbers w8
+    add x13, _cpu, LOCAL_ret_cache
+    str _ip, [x13, x12, lsl 3]
+    // jump to target
+    mov _ip, _xtmp
+    b fiber_ret
+    write_bullshit 64, call_indir64
 
 .gadget ret
     mov _addr, esp
@@ -70,6 +108,41 @@
     b fiber_ret
     read_bullshit 32, ret
 
+.gadget ret64
+    mov _xaddr, xsp
+    // load return address and save to _xtmp
+    read_prep 64, ret64
+    ldr _xtmp, [_xaddr]
+    // pop stack pointer
+    ldr x8, [_ip, 8]
+    add xsp, xsp, x8
+    // load saved ip in return cache
+    lsr x12, _xtmp, 4
+    and x12, x12, 0xfff
+    add x13, _cpu, LOCAL_ret_cache
+    ldr _ip, [x13, x12, lsl 3]
+    // found?
+    cbz _ip, 2f
+    // check if we jumped to the correct CALL instruction
+    ldr x9, [_ip, 16]
+    ldr x8, [_ip, 8]
+    cmp _xtmp, x9
+    b.ne 1f
+    // good, now do return chaining, the logic is similar to `fiber_ret_chain`
+    ldr _ip, [_ip, 24]
+    cmp _ip, 0
+    b.lt 1f
+    sub x8, _ip, FIBER_BLOCK_code
+    str x8, [_cpu, LOCAL_last_block]
+    gret
+1:
+    str x8, [_cpu, LOCAL_last_block]
+    // fallthrough
+2:
+    mov _ip, _xtmp
+    b fiber_ret
+    read_bullshit 64, ret64
+
 .gadget jmp_indir
     mov eip, _tmp
     b fiber_ret
@@ -87,7 +160,8 @@
 #define COND_LIST o,c,z,cz,s,p,sxo,sxoz
 
 .macro check_res
-    cmpl $0, CPU_res(%_cpu)
+    ldr x8, [_cpu, CPU_res]
+    cmp x8, 0
 .endm
 .macro check_cf
     cmpb $0, CPU_cf(%_cpu)
@@ -112,26 +186,26 @@
         cbnz w8, \target
     .else N .ifc \cond,z
         check_res_or_flag 1/*ZF_RES*/, 6/*ZF_FLAG*/, \target, 3f
-        ldr w8, [_cpu, CPU_res]
-        cbz w8, \target
+        ldr x8, [_cpu, CPU_res]
+        cbz x8, \target
     3:
     .else N .ifc \cond,cz
         ldrb w8, [_cpu, CPU_cf]
         cbnz w8, \target
         check_res_or_flag 1/*ZF_RES*/, 6/*ZF_FLAG*/, \target, 3f
-        ldr w8, [_cpu, CPU_res]
-        cbz w8, \target
+        ldr x8, [_cpu, CPU_res]
+        cbz x8, \target
     3:
     .else N .ifc \cond,s
         check_res_or_flag 2/*SF_RES*/, 7/*SF_FLAG*/, \target, 3f
-        ldr w8, [_cpu, CPU_res]
-        cmp w8, 0
+        ldr x8, [_cpu, CPU_res]
+        cmp x8, 0
         b.lt \target
     3:
     .else N .ifc \cond,p
         check_res_or_flag 0/*PF_RES*/, 2/*PF_FLAG*/, \target, 3f
         # this is so sad
-        ldr w8, [_cpu, CPU_res]
+        ldr x8, [_cpu, CPU_res]
         uxtb w8, w8
         fmov s0, w8
         cnt v0.8b, v0.8b
@@ -140,15 +214,15 @@
         tbz w8, 0, \target
     3:
     .else N .ifc \cond,sxo
-        ldr w8, [_cpu, CPU_res]
-        cmp w8, 0
+        ldr x8, [_cpu, CPU_res]
+        cmp x8, 0
         cset w8, lt
         ldrb w9, [_cpu, CPU_of]
         cmp w8, w9
         b.ne \target
     .else N .ifc \cond,sxoz
-        ldr w8, [_cpu, CPU_res]
-        cmp w8, 0
+        ldr x8, [_cpu, CPU_res]
+        cmp x8, 0
         b.eq \target
         cset w8, lt
         ldrb w9, [_cpu, CPU_of]
@@ -211,6 +285,21 @@
     gret
     write_bullshit 32, pushf
 
+.gadget pushf64
+    save_c
+    mov x0, _cpu
+    bl NAME(helper_collapse_flags)
+    restore_c
+
+    sub xsp, xsp, 8
+    mov _xaddr, xsp
+    write_prep 64, pushf64
+    ldr w8, [_cpu, CPU_eflags]
+    str x8, [_xaddr]
+    write_done 64, pushf64
+    gret
+    write_bullshit 64, pushf64
+
 .gadget popf
     mov _addr, esp
     read_prep 32, popf
@@ -224,6 +313,20 @@
     restore_c
     gret
     read_bullshit 32, popf
+
+.gadget popf64
+    mov _xaddr, xsp
+    read_prep 64, popf64
+    ldr x8, [_xaddr]
+    str w8, [_cpu, CPU_eflags]
+    add xsp, xsp, 8
+
+    save_c
+    mov x0, _cpu
+    bl NAME(helper_expand_flags)
+    restore_c
+    gret
+    read_bullshit 64, popf64
 
 .gadget sahf
     ubfx w8, eax, 8, 8

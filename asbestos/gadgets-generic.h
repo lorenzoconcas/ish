@@ -5,10 +5,11 @@
 #define __ifin(thing, line, ...) irp da_op##line, __VA_ARGS__ N .ifc thing,\da_op##line
 #define endifin endif N .endr
 
-# sync with enum reg
-#define REG_LIST reg_a,reg_c,reg_d,reg_b,reg_sp,reg_bp,reg_si,reg_di
+# sync with enum arg register order
+#define REG_LIST reg_a,reg_c,reg_d,reg_b,reg_sp,reg_bp,reg_si,reg_di,reg_r8,reg_r9,reg_r10,reg_r11,reg_r12,reg_r13,reg_r14,reg_r15
 # sync with enum arg
-#define GADGET_LIST REG_LIST,imm,mem,addr,gs
+#define REX_LOW8_LIST reg_spl,reg_bpl,reg_sil,reg_dil
+#define GADGET_LIST REG_LIST,imm,mem,addr,gs,REX_LOW8_LIST
 # sync with enum size
 #define SIZE_LIST 8,16,32
 

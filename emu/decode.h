@@ -4,7 +4,9 @@
 #include "emu/interrupt.h"
 
 #undef oz
-#define oz OP_SIZE
+#define oz ((state->long_mode && (rex & 0x8)) ? 64 : OP_SIZE)
+#define stackz ((state->long_mode && OP_SIZE != 16) ? 64 : OP_SIZE)
+#define STACK_IS_64 (state->long_mode && OP_SIZE != 16)
 #define reg_ah reg_sp
 #define reg_ch reg_bp
 #define reg_dh reg_si
@@ -23,18 +25,133 @@ __no_instrument DECODER_RET glue(DECODER_NAME, OP_SIZE)(DECODER_ARGS) {
     byte_t insn;
     uint64_t imm = 0;
     struct modrm modrm;
-#define READIMM_(name, size) _READIMM(name, size); TRACE("imm %llx ", (long long) name)
+#define READIMM_(name, size) do { name = 0; _READIMM(name, size); TRACE("imm %llx ", (long long) name); } while (0)
 #define READINSN _READIMM(insn, 8); TRACE("%02x ", insn)
 #define READIMM READIMM_(imm, OP_SIZE)
-#define READIMMoz READIMM // there's nothing more permanent than a temporary hack
+#define READIMMoz do { \
+    if (oz == 64) { \
+        READIMM_(imm, 64); \
+    } else { \
+        READIMM_(imm, OP_SIZE); \
+    } \
+} while (0)
 #define READIMM8 READIMM_(imm, 8); imm = (int8_t) (uint8_t) imm
 #define READIMM16 READIMM_(imm, 16)
+#define RIP_REL_ADVANCE(size) do { \
+    if (state->long_mode && modrm.rip_relative) \
+        modrm.offset += (size) / 8; \
+} while (0)
+#define READIMM_RM do { READIMM; RIP_REL_ADVANCE(OP_SIZE); } while (0)
+#define READIMM8_RM do { READIMM8; RIP_REL_ADVANCE(8); } while (0)
+#define READIMM16_RM do { READIMM16; RIP_REL_ADVANCE(16); } while (0)
+#define READIMMoz_RM do { READIMMoz; RIP_REL_ADVANCE(oz); } while (0)
+#define SEXT_IMM32_TO_64 do { imm = (int32_t) (uint32_t) imm; } while (0)
+#define READIMM_SEXT_OZ do { \
+    if (oz == 64) { \
+        READIMM_(imm, 32); \
+        SEXT_IMM32_TO_64; \
+    } else { \
+        READIMM; \
+    } \
+} while (0)
+#define READIMM_SEXT_OZ_RM do { \
+    if (oz == 64) { \
+        READIMM_(imm, 32); \
+        RIP_REL_ADVANCE(32); \
+        SEXT_IMM32_TO_64; \
+    } else { \
+        READIMM_RM; \
+    } \
+} while (0)
+#define READIMM_SEXT_STACK do { \
+    if (STACK_IS_64) { \
+        READIMM_(imm, 32); \
+        SEXT_IMM32_TO_64; \
+    } else { \
+        READIMM; \
+    } \
+} while (0)
+#define READREL do { \
+    READIMM; \
+    if (OP_SIZE == 16) \
+        imm = (int16_t) (uint16_t) imm; \
+    else \
+        imm = (int32_t) (uint32_t) imm; \
+} while (0)
+#define READTESTIMM(z) do { \
+    if ((z) == 8) { \
+        READIMM8; \
+        RIP_REL_ADVANCE(8); \
+    } else if ((z) == 16) { \
+        READIMM16; \
+        RIP_REL_ADVANCE(16); \
+    } else if ((z) == 64) { \
+        READIMM_(imm, 32); \
+        RIP_REL_ADVANCE(32); \
+        SEXT_IMM32_TO_64; \
+    } else { \
+        READIMM_(imm, 32); \
+        RIP_REL_ADVANCE(32); \
+    } \
+} while (0)
 #define READMODRM_MEM READMODRM; if (modrm.type == modrm_reg) UNDEFINED
 #define READMODRM_NOMEM READMODRM; if (modrm.type != modrm_reg) UNDEFINED
+#define REXB (state->long_mode && (rex & 0x1))
+#define READ_OPTIONAL_REX do { \
+    if (state->long_mode && insn >= 0x40 && insn <= 0x4f) { \
+        rex = insn; \
+        TRACE("rex %02x ", rex); \
+        READINSN; \
+    } \
+} while (0)
+#define PUSH_STACK(thing) do { \
+    load(thing, stackz); \
+    if (STACK_IS_64) { gg(push64, state->orig_ip); } \
+    else { gg(push, state->orig_ip); } \
+} while (0)
+#define POP_STACK(thing) do { \
+    if (STACK_IS_64) { gg(pop64, state->orig_ip); } \
+    else { gg(pop, state->orig_ip); } \
+    state->orig_ip_extra = 1ul << 62; \
+    store(thing, stackz); \
+} while (0)
+#define PUSH_REXB(low, high) do { \
+    if (REXB) { PUSH_STACK(high); } \
+    else { PUSH_STACK(low); } \
+} while (0)
+#define POP_REXB(low, high) do { \
+    if (REXB) { POP_STACK(high); } \
+    else { POP_STACK(low); } \
+} while (0)
+#define XCHG_REXB(low, high) do { \
+    if (REXB) { XCHG(high, reg_a, oz); } \
+    else { XCHG(low, reg_a, oz); } \
+} while (0)
+#define MOV_IMM_REXB(low, high) do { \
+    READIMMoz; \
+    if (REXB) { MOV(imm, high, oz); } \
+    else { MOV(imm, low, oz); } \
+} while (0)
+#define MOV_IMM8_REXB(low, high) do { \
+    READIMM8; \
+    if (REXB) { MOV(imm, high, 8); } \
+    else { MOV(imm, low, 8); } \
+} while (0)
+#define MOV_IMM8_LEGACY_OR_REX(legacy_high, rex_low, rex_high) do { \
+    READIMM8; \
+    if (state->long_mode && rex != 0) { \
+        if (REXB) { MOV(imm, rex_high, 8); } \
+        else { MOV(imm, rex_low, 8); } \
+    } else { \
+        MOV(imm, legacy_high, 8); \
+    } \
+} while (0)
 
 restart:
     TRACEIP();
     READINSN;
+    if (rex != 0)
+        TRACE("rex %02x ", rex);
     switch (insn) {
 #define MAKE_OP(x, OP, op) \
         case x+0x0: TRACEI(op " reg8, modrm8"); \
@@ -48,7 +165,7 @@ restart:
         case x+0x4: TRACEI(op " imm8, al\t"); \
                    READIMM8; OP(imm, reg_a,8); break; \
         case x+0x5: TRACEI(op " imm, oax\t"); \
-                   READIMM; OP(imm, reg_a,oz); break
+                   READIMM_SEXT_OZ; OP(imm, reg_a,oz); break
 
         MAKE_OP(0x00, ADD, "add");
         MAKE_OP(0x08, OR, "or");
@@ -58,6 +175,11 @@ restart:
             READINSN;
             switch (insn) {
                 case 0x18 ... 0x1f: TRACEI("nop modrm\t"); READMODRM; break;
+
+                case 0x05:
+                           if (!state->long_mode) UNDEFINED;
+                           TRACEI("syscall");
+                           INT(INT_SYSCALL); break;
 
                 case 0x28: TRACEI("movaps xmm:modrm, xmm");
                            READMODRM; VMOV(xmm_modrm_val, xmm_modrm_reg,128); break;
@@ -103,37 +225,37 @@ restart:
                 case 0x77: TRACEI("emms (ignored because there is no mmx)"); break;
 
                 case 0x80: TRACEI("jo rel\t");
-                           READIMM; J_REL(O, imm); break;
+                           READREL; J_REL(O, imm); break;
                 case 0x81: TRACEI("jno rel\t");
-                           READIMM; JN_REL(O, imm); break;
+                           READREL; JN_REL(O, imm); break;
                 case 0x82: TRACEI("jb rel\t");
-                           READIMM; J_REL(B, imm); break;
+                           READREL; J_REL(B, imm); break;
                 case 0x83: TRACEI("jnb rel\t");
-                           READIMM; JN_REL(B, imm); break;
+                           READREL; JN_REL(B, imm); break;
                 case 0x84: TRACEI("je rel\t");
-                           READIMM; J_REL(E, imm); break;
+                           READREL; J_REL(E, imm); break;
                 case 0x85: TRACEI("jne rel\t");
-                           READIMM; JN_REL(E, imm); break;
+                           READREL; JN_REL(E, imm); break;
                 case 0x86: TRACEI("jbe rel\t");
-                           READIMM; J_REL(BE, imm); break;
+                           READREL; J_REL(BE, imm); break;
                 case 0x87: TRACEI("ja rel\t");
-                           READIMM; JN_REL(BE, imm); break;
+                           READREL; JN_REL(BE, imm); break;
                 case 0x88: TRACEI("js rel\t");
-                           READIMM; J_REL(S, imm); break;
+                           READREL; J_REL(S, imm); break;
                 case 0x89: TRACEI("jns rel\t");
-                           READIMM; JN_REL(S, imm); break;
+                           READREL; JN_REL(S, imm); break;
                 case 0x8a: TRACEI("jp rel\t");
-                           READIMM; J_REL(P, imm); break;
+                           READREL; J_REL(P, imm); break;
                 case 0x8b: TRACEI("jnp rel\t");
-                           READIMM; JN_REL(P, imm); break;
+                           READREL; JN_REL(P, imm); break;
                 case 0x8c: TRACEI("jl rel\t");
-                           READIMM; J_REL(L, imm); break;
+                           READREL; J_REL(L, imm); break;
                 case 0x8d: TRACEI("jnl rel\t");
-                           READIMM; JN_REL(L, imm); break;
+                           READREL; JN_REL(L, imm); break;
                 case 0x8e: TRACEI("jle rel\t");
-                           READIMM; J_REL(LE, imm); break;
+                           READREL; J_REL(LE, imm); break;
                 case 0x8f: TRACEI("jnle rel\t");
-                           READIMM; JN_REL(LE, imm); break;
+                           READREL; JN_REL(LE, imm); break;
 
                 case 0x90: TRACEI("seto\t");
                            READMODRM; SET(O, modrm_val); break;
@@ -174,7 +296,7 @@ restart:
                            READMODRM; BT(modrm_reg, modrm_val,oz); break;
 
                 case 0xa4: TRACEI("shld imm8, reg, modrm");
-                           READMODRM; READIMM8; SHLD(imm, modrm_reg, modrm_val,oz); break;
+                           READMODRM; READIMM8_RM; SHLD(imm, modrm_reg, modrm_val,oz); break;
                 case 0xa5: TRACEI("shld cl, reg, modrm");
                            READMODRM; SHLD(reg_c, modrm_reg, modrm_val,oz); break;
 
@@ -182,7 +304,7 @@ restart:
                            READMODRM; BTS(modrm_reg, modrm_val,oz); break;
 
                 case 0xac: TRACEI("shrd imm8, reg, modrm");
-                           READMODRM; READIMM8; SHRD(imm, modrm_reg, modrm_val,oz); break;
+                           READMODRM; READIMM8_RM; SHRD(imm, modrm_reg, modrm_val,oz); break;
                 case 0xad: TRACEI("shrd cl, reg, modrm");
                            READMODRM; SHRD(reg_c, modrm_reg, modrm_val,oz); break;
 
@@ -214,7 +336,7 @@ restart:
     }
 
                 case 0xba: TRACEI("grp8 imm8, modrm");
-                           READMODRM; READIMM8; GRP8(imm, modrm_val,oz); break;
+                           READMODRM; READIMM8_RM; GRP8(imm, modrm_val,oz); break;
 
 #undef GRP8
 
@@ -235,7 +357,7 @@ restart:
                 case 0xc1: TRACEI("xadd reg, modrm");
                            READMODRM; XADD(modrm_reg, modrm_val,oz); break;
                 case 0xc2: TRACEI("cmppd xmm:modrm, xmm, imm8");
-                           READMODRM; READIMM8; V_OP_IMM(fcmp_p, xmm_modrm_val, xmm_modrm_reg,64); break;
+                           READMODRM; READIMM8_RM; V_OP_IMM(fcmp_p, xmm_modrm_val, xmm_modrm_reg,64); break;
 
                 case 0xc7: READMODRM_MEM; switch (modrm.opcode) {
                                case 1: TRACEI("cmpxchg8b modrm");
@@ -246,21 +368,21 @@ restart:
 
 #if OP_SIZE != 16
                 case 0xc8: TRACEI("bswap eax");
-                           BSWAP(reg_a); break;
+                           BSWAP_REXB(reg_a, reg_r8); break;
                 case 0xc9: TRACEI("bswap ecx");
-                           BSWAP(reg_c); break;
+                           BSWAP_REXB(reg_c, reg_r9); break;
                 case 0xca: TRACEI("bswap edx");
-                           BSWAP(reg_d); break;
+                           BSWAP_REXB(reg_d, reg_r10); break;
                 case 0xcb: TRACEI("bswap ebx");
-                           BSWAP(reg_b); break;
+                           BSWAP_REXB(reg_b, reg_r11); break;
                 case 0xcc: TRACEI("bswap esp");
-                           BSWAP(reg_sp); break;
+                           BSWAP_REXB(reg_sp, reg_r12); break;
                 case 0xcd: TRACEI("bswap ebp");
-                           BSWAP(reg_bp); break;
+                           BSWAP_REXB(reg_bp, reg_r13); break;
                 case 0xce: TRACEI("bswap esi");
-                           BSWAP(reg_si); break;
+                           BSWAP_REXB(reg_si, reg_r14); break;
                 case 0xcf: TRACEI("bswap edi");
-                           BSWAP(reg_di); break;
+                           BSWAP_REXB(reg_di, reg_r15); break;
 #endif
 
 #if OP_SIZE == 16
@@ -330,14 +452,17 @@ restart:
                            READMODRM; V_OP(unpackl_qdq, xmm_modrm_val, xmm_modrm_reg,128); break;
                 case 0x6d: TRACEI("punpckhqdq xmm:modrm, xmm");
                            READMODRM; V_OP(unpackh_dq, xmm_modrm_val, xmm_modrm_reg,128); break;
-                case 0x6e: TRACEI("movd modrm, xmm");
-                           READMODRM; VMOV(modrm_val, xmm_modrm_reg,32); break;
+                case 0x6e: TRACEI("movd/movq modrm, xmm");
+                           READMODRM;
+                           if (oz == 64) { VMOV(modrm_val, xmm_modrm_reg,64); }
+                           else { VMOV(modrm_val, xmm_modrm_reg,32); }
+                           break;
 
                 case 0x6f: TRACEI("movdqa xmm:modrm, xmm");
                            READMODRM; VMOV(xmm_modrm_val, xmm_modrm_reg,128); break;
 
                 case 0x70: TRACEI("pshufd xmm:modrm, xmm, imm8");
-                           READMODRM; READIMM8; V_OP_IMM(shuffle_d, xmm_modrm_val, xmm_modrm_reg,128); break;
+                           READMODRM; READIMM8_RM; V_OP_IMM(shuffle_d, xmm_modrm_val, xmm_modrm_reg,128); break;
                 case 0x71: READMODRM_NOMEM;
                            switch (modrm.opcode) {
                                 case 2: TRACEI("psrlw imm, xmm");
@@ -381,17 +506,20 @@ restart:
                 case 0x76: TRACEI("pcmpeqd xmm:modrm, xmm");
                            READMODRM; V_OP(compare_eqd, xmm_modrm_val, xmm_modrm_reg,128); break;
 
-                case 0x7e: TRACEI("movd xmm, modrm");
-                           READMODRM; VMOV(xmm_modrm_reg, modrm_val,32); break;
+                case 0x7e: TRACEI("movd/movq xmm, modrm");
+                           READMODRM;
+                           if (oz == 64) { V_OP(merge, xmm_modrm_reg, modrm_val,64); }
+                           else { VMOV(xmm_modrm_reg, modrm_val,32); }
+                           break;
                 case 0x7f: TRACEI("movdqa xmm, xmm:modrm");
                            READMODRM; VMOV(xmm_modrm_reg, xmm_modrm_val,128); break;
 
                 case 0xc4: TRACEI("pinsrw xmm, modrm_val, imm8");
-                           READMODRM; READIMM8; V_OP_IMM(insert_w, modrm_val, xmm_modrm_reg,128); break;
+                           READMODRM; READIMM8_RM; V_OP_IMM(insert_w, modrm_val, xmm_modrm_reg,128); break;
                 case 0xc5: TRACEI("pextrw xmm, modrm_val, imm8");
-                           READMODRM_NOMEM; READIMM8; V_OP_IMM(extract_w, xmm_modrm_val, modrm_reg,128); break;
+                           READMODRM_NOMEM; READIMM8_RM; V_OP_IMM(extract_w, xmm_modrm_val, modrm_reg,128); break;
                 case 0xc6: TRACEI("shufpd xmm:modrm, xmm, imm8");
-                           READMODRM; READIMM8; V_OP_IMM(shuffle_pd, xmm_modrm_val, xmm_modrm_reg,128); break;
+                           READMODRM; READIMM8_RM; V_OP_IMM(shuffle_pd, xmm_modrm_val, xmm_modrm_reg,128); break;
                 case 0xd1: TRACEI("psrlw xmm:modrm, xmm");
                            READMODRM; V_OP(shiftr_w, xmm_modrm_val, xmm_modrm_reg, 128); break;
                 case 0xd2: TRACEI("psrld xmm:modrm, xmm");
@@ -533,7 +661,7 @@ restart:
                            READMODRM; VMOV(mm_modrm_val, mm_modrm_reg,64); break;
 
                 case 0x70: TRACEI("pshufw mm:modrm, mm, imm8");
-                           READMODRM; READIMM8; V_OP_IMM(shuffle_w, mm_modrm_val, mm_modrm_reg,64); break;
+                           READMODRM; READIMM8_RM; V_OP_IMM(shuffle_w, mm_modrm_val, mm_modrm_reg,64); break;
                 case 0x71: READMODRM;
                            switch (modrm.opcode) {
                                case 2: TRACEI("psrlw imm, mm");
@@ -577,9 +705,9 @@ restart:
                 case 0x7f: TRACEI("movq mm, mm:modrm");
                            READMODRM_MEM; VMOV(mm_modrm_reg, mm_modrm_val,64); break;
                 case 0xc4: TRACEI("pinsrw mm, modrm_val, imm8");
-                           READMODRM; READIMM8; V_OP_IMM(insert_w, modrm_val, mm_modrm_reg,64); break;
+                           READMODRM; READIMM8_RM; V_OP_IMM(insert_w, modrm_val, mm_modrm_reg,64); break;
                 case 0xc6: TRACEI("shufps xmm:modrm, xmm, imm8");
-                           READMODRM; READIMM8; V_OP_IMM(shuffle_ps, xmm_modrm_val, xmm_modrm_reg,128); break;
+                           READMODRM; READIMM8_RM; V_OP_IMM(shuffle_ps, xmm_modrm_val, xmm_modrm_reg,128); break;
                 case 0xd1: TRACEI("psrlw mm:modrm, mm");
                            READMODRM; V_OP(shiftr_w, mm_modrm_val, mm_modrm_reg,64); break;
                 case 0xd2: TRACEI("psrld mm:modrm, mm");
@@ -647,56 +775,70 @@ restart:
 
         case 0x3e: TRACEI("segment ds (useless)"); goto restart;
 
-        case 0x40: TRACEI("inc oax"); INC(reg_a,oz); break;
-        case 0x41: TRACEI("inc ocx"); INC(reg_c,oz); break;
-        case 0x42: TRACEI("inc odx"); INC(reg_d,oz); break;
-        case 0x43: TRACEI("inc obx"); INC(reg_b,oz); break;
-        case 0x44: TRACEI("inc osp"); INC(reg_sp,oz); break;
-        case 0x45: TRACEI("inc obp"); INC(reg_bp,oz); break;
-        case 0x46: TRACEI("inc osi"); INC(reg_si,oz); break;
-        case 0x47: TRACEI("inc odi"); INC(reg_di,oz); break;
-        case 0x48: TRACEI("dec oax"); DEC(reg_a,oz); break;
-        case 0x49: TRACEI("dec ocx"); DEC(reg_c,oz); break;
-        case 0x4a: TRACEI("dec odx"); DEC(reg_d,oz); break;
-        case 0x4b: TRACEI("dec obx"); DEC(reg_b,oz); break;
-        case 0x4c: TRACEI("dec osp"); DEC(reg_sp,oz); break;
-        case 0x4d: TRACEI("dec obp"); DEC(reg_bp,oz); break;
-        case 0x4e: TRACEI("dec osi"); DEC(reg_si,oz); break;
-        case 0x4f: TRACEI("dec odi"); DEC(reg_di,oz); break;
+        case 0x40 ... 0x4f:
+                   if (state->long_mode) {
+                       rex = insn;
+                       goto restart;
+                   }
+                   switch (insn) {
+                       case 0x40: TRACEI("inc oax"); INC(reg_a,oz); break;
+                       case 0x41: TRACEI("inc ocx"); INC(reg_c,oz); break;
+                       case 0x42: TRACEI("inc odx"); INC(reg_d,oz); break;
+                       case 0x43: TRACEI("inc obx"); INC(reg_b,oz); break;
+                       case 0x44: TRACEI("inc osp"); INC(reg_sp,oz); break;
+                       case 0x45: TRACEI("inc obp"); INC(reg_bp,oz); break;
+                       case 0x46: TRACEI("inc osi"); INC(reg_si,oz); break;
+                       case 0x47: TRACEI("inc odi"); INC(reg_di,oz); break;
+                       case 0x48: TRACEI("dec oax"); DEC(reg_a,oz); break;
+                       case 0x49: TRACEI("dec ocx"); DEC(reg_c,oz); break;
+                       case 0x4a: TRACEI("dec odx"); DEC(reg_d,oz); break;
+                       case 0x4b: TRACEI("dec obx"); DEC(reg_b,oz); break;
+                       case 0x4c: TRACEI("dec osp"); DEC(reg_sp,oz); break;
+                       case 0x4d: TRACEI("dec obp"); DEC(reg_bp,oz); break;
+                       case 0x4e: TRACEI("dec osi"); DEC(reg_si,oz); break;
+                       case 0x4f: TRACEI("dec odi"); DEC(reg_di,oz); break;
+                   }
+                   break;
 
-        case 0x50: TRACEI("push oax"); PUSH(reg_a,oz); break;
-        case 0x51: TRACEI("push ocx"); PUSH(reg_c,oz); break;
-        case 0x52: TRACEI("push odx"); PUSH(reg_d,oz); break;
-        case 0x53: TRACEI("push obx"); PUSH(reg_b,oz); break;
-        case 0x54: TRACEI("push osp"); PUSH(reg_sp,oz); break;
-        case 0x55: TRACEI("push obp"); PUSH(reg_bp,oz); break;
-        case 0x56: TRACEI("push osi"); PUSH(reg_si,oz); break;
-        case 0x57: TRACEI("push odi"); PUSH(reg_di,oz); break;
+        case 0x50: TRACEI("push oax/r8"); PUSH_REXB(reg_a, reg_r8); break;
+        case 0x51: TRACEI("push ocx/r9"); PUSH_REXB(reg_c, reg_r9); break;
+        case 0x52: TRACEI("push odx/r10"); PUSH_REXB(reg_d, reg_r10); break;
+        case 0x53: TRACEI("push obx/r11"); PUSH_REXB(reg_b, reg_r11); break;
+        case 0x54: TRACEI("push osp/r12"); PUSH_REXB(reg_sp, reg_r12); break;
+        case 0x55: TRACEI("push obp/r13"); PUSH_REXB(reg_bp, reg_r13); break;
+        case 0x56: TRACEI("push osi/r14"); PUSH_REXB(reg_si, reg_r14); break;
+        case 0x57: TRACEI("push odi/r15"); PUSH_REXB(reg_di, reg_r15); break;
 
-        case 0x58: TRACEI("pop oax"); POP(reg_a,oz); break;
-        case 0x59: TRACEI("pop ocx"); POP(reg_c,oz); break;
-        case 0x5a: TRACEI("pop odx"); POP(reg_d,oz); break;
-        case 0x5b: TRACEI("pop obx"); POP(reg_b,oz); break;
-        case 0x5c: TRACEI("pop osp"); POP(reg_sp,oz); break;
-        case 0x5d: TRACEI("pop obp"); POP(reg_bp,oz); break;
-        case 0x5e: TRACEI("pop osi"); POP(reg_si,oz); break;
-        case 0x5f: TRACEI("pop odi"); POP(reg_di,oz); break;
+        case 0x58: TRACEI("pop oax/r8"); POP_REXB(reg_a, reg_r8); break;
+        case 0x59: TRACEI("pop ocx/r9"); POP_REXB(reg_c, reg_r9); break;
+        case 0x5a: TRACEI("pop odx/r10"); POP_REXB(reg_d, reg_r10); break;
+        case 0x5b: TRACEI("pop obx/r11"); POP_REXB(reg_b, reg_r11); break;
+        case 0x5c: TRACEI("pop osp/r12"); POP_REXB(reg_sp, reg_r12); break;
+        case 0x5d: TRACEI("pop obp/r13"); POP_REXB(reg_bp, reg_r13); break;
+        case 0x5e: TRACEI("pop osi/r14"); POP_REXB(reg_si, reg_r14); break;
+        case 0x5f: TRACEI("pop odi/r15"); POP_REXB(reg_di, reg_r15); break;
 
+        case 0x64: TRACE("segment fs\n"); SEG_FS(); goto restart;
         case 0x65: TRACE("segment gs\n"); SEG_GS(); goto restart;
 
         case 0x60: TRACE("pusha");
-                   PUSH(reg_a,oz); PUSH(reg_c,oz);
-                   PUSH(reg_d,oz); PUSH(reg_b,oz);
-                   PUSH(reg_sp,oz); PUSH(reg_bp,oz); // TODO this is the wrong sp
-                   PUSH(reg_si,oz); PUSH(reg_di,oz);
+                   if (state->long_mode) UNDEFINED;
+                   PUSH_STACK(reg_a); PUSH_STACK(reg_c);
+                   PUSH_STACK(reg_d); PUSH_STACK(reg_b);
+                   PUSH_STACK(reg_sp); PUSH_STACK(reg_bp); // TODO this is the wrong sp
+                   PUSH_STACK(reg_si); PUSH_STACK(reg_di);
                    break;
         case 0x61: TRACE("popa");
-                   POP(reg_di,oz); POP(reg_si,oz);
+                   if (state->long_mode) UNDEFINED;
+                   POP_STACK(reg_di); POP_STACK(reg_si);
                    // pop reg_sp into reg_b as an easy way to ignore it
-                   POP(reg_bp,oz); POP(reg_b,oz);
-                   POP(reg_b,oz); POP(reg_d,oz);
-                   POP(reg_c,oz); POP(reg_a,oz);
+                   POP_STACK(reg_bp); POP_STACK(reg_b);
+                   POP_STACK(reg_b); POP_STACK(reg_d);
+                   POP_STACK(reg_c); POP_STACK(reg_a);
                    break;
+        case 0x63: TRACEI("movsxd modrm32, reg");
+                   if (!state->long_mode) UNDEFINED;
+                   READMODRM; MOVSX(modrm_val, modrm_reg,32,oz); break;
 
         case 0x66:
 #if OP_SIZE == 32
@@ -707,16 +849,19 @@ restart:
             return glue(DECODER_NAME, 32)(DECODER_PASS_ARGS);
 #endif
 
-        case 0x67: TRACEI("address size prefix (ignored)"); goto restart;
+        case 0x67: TRACEI("address size prefix");
+                   if (state->long_mode)
+                       addr32 = true;
+                   goto restart;
 
         case 0x68: TRACEI("push imm\t");
-                   READIMM; PUSH(imm,oz); break;
+                   READIMM_SEXT_STACK; PUSH_STACK(imm); break;
         case 0x69: TRACEI("imul imm\t");
-                   READMODRM; READIMM; IMUL3(imm, modrm_val, modrm_reg,oz); break;
+                   READMODRM; READIMM_SEXT_OZ_RM; IMUL3(imm, modrm_val, modrm_reg,oz); break;
         case 0x6a: TRACEI("push imm8\t");
-                   READIMM8; PUSH(imm,oz); break;
+                   READIMM8; PUSH_STACK(imm); break;
         case 0x6b: TRACEI("imul imm8\t");
-                   READMODRM; READIMM8; IMUL3(imm, modrm_val, modrm_reg,oz); break;
+                   READMODRM; READIMM8_RM; IMUL3(imm, modrm_val, modrm_reg,oz); break;
 
         case 0x70: TRACEI("jo rel8\t");
                    READIMM8; J_REL(O, imm); break;
@@ -774,11 +919,11 @@ restart:
     }
 
         case 0x80: TRACEI("grp1 imm8, modrm8");
-                   READMODRM; READIMM8; GRP1(imm, modrm_val,8); break;
+                   READMODRM; READIMM8_RM; GRP1(imm, modrm_val,8); break;
         case 0x81: TRACEI("grp1 imm, modrm");
-                   READMODRM; READIMM; GRP1(imm, modrm_val,oz); break;
+                   READMODRM; READIMM_SEXT_OZ_RM; GRP1(imm, modrm_val,oz); break;
         case 0x83: TRACEI("grp1 imm8, modrm");
-                   READMODRM; READIMM8; GRP1(imm, modrm_val,oz); break;
+                   READMODRM; READIMM8_RM; GRP1(imm, modrm_val,oz); break;
 
 #undef GRP1
 
@@ -820,23 +965,24 @@ restart:
             }
 
         case 0x8f: TRACEI("pop modrm");
-                   READMODRM; POP(modrm_val,oz); break;
+                   READMODRM; POP_STACK(modrm_val); break;
 
-        case 0x90: TRACEI("nop"); break;
-        case 0x91: TRACEI("xchg ocx, oax");
-                   XCHG(reg_c, reg_a,oz); break;
-        case 0x92: TRACEI("xchg odx, oax");
-                   XCHG(reg_d, reg_a,oz); break;
-        case 0x93: TRACEI("xchg obx, oax");
-                   XCHG(reg_b, reg_a,oz); break;
-        case 0x94: TRACEI("xchg osp, oax");
-                   XCHG(reg_sp, reg_a,oz); break;
-        case 0x95: TRACEI("xchg obp, oax");
-                   XCHG(reg_bp, reg_a,oz); break;
-        case 0x96: TRACEI("xchg osi, oax");
-                   XCHG(reg_si, reg_a,oz); break;
-        case 0x97: TRACEI("xchg odi, oax");
-                   XCHG(reg_di, reg_a,oz); break;
+        case 0x90: TRACEI("nop/xchg r8, oax");
+                   if (REXB) XCHG(reg_r8, reg_a,oz); break;
+        case 0x91: TRACEI("xchg ocx/r9, oax");
+                   XCHG_REXB(reg_c, reg_r9); break;
+        case 0x92: TRACEI("xchg odx/r10, oax");
+                   XCHG_REXB(reg_d, reg_r10); break;
+        case 0x93: TRACEI("xchg obx/r11, oax");
+                   XCHG_REXB(reg_b, reg_r11); break;
+        case 0x94: TRACEI("xchg osp/r12, oax");
+                   XCHG_REXB(reg_sp, reg_r12); break;
+        case 0x95: TRACEI("xchg obp/r13, oax");
+                   XCHG_REXB(reg_bp, reg_r13); break;
+        case 0x96: TRACEI("xchg osi/r14, oax");
+                   XCHG_REXB(reg_si, reg_r14); break;
+        case 0x97: TRACEI("xchg odi/r15, oax");
+                   XCHG_REXB(reg_di, reg_r15); break;
 
         case 0x98: TRACEI("cvte"); CVTE; break;
         case 0x99: TRACEI("cvt"); CVT; break;
@@ -864,7 +1010,7 @@ restart:
         case 0xa8: TRACEI("test imm8, al");
                    READIMM8; TEST(imm, reg_a,8); break;
         case 0xa9: TRACEI("test imm, oax");
-                   READIMM; TEST(imm, reg_a,oz); break;
+                   READIMM_SEXT_OZ; TEST(imm, reg_a,oz); break;
 
         case 0xaa: TRACEI("stosb"); STR(stos, 8); break;
         case 0xab: TRACEI("stos"); STR(stos, oz); break;
@@ -873,39 +1019,39 @@ restart:
         case 0xae: TRACEI("scasb"); STR(scas, 8); break;
         case 0xaf: TRACEI("scas"); STR(scas, oz); break;
 
-        case 0xb0: TRACEI("mov imm, al\t");
-                   READIMM8; MOV(imm, reg_a,8); break;
-        case 0xb1: TRACEI("mov imm, cl\t");
-                   READIMM8; MOV(imm, reg_c,8); break;
-        case 0xb2: TRACEI("mov imm, dl\t");
-                   READIMM8; MOV(imm, reg_d,8); break;
-        case 0xb3: TRACEI("mov imm, bl\t");
-                   READIMM8; MOV(imm, reg_b,8); break;
-        case 0xb4: TRACEI("mov imm, ah\t");
-                   READIMM8; MOV(imm, reg_ah,8); break;
-        case 0xb5: TRACEI("mov imm, ch\t");
-                   READIMM8; MOV(imm, reg_ch,8); break;
-        case 0xb6: TRACEI("mov imm, dh\t");
-                   READIMM8; MOV(imm, reg_dh,8); break;
-        case 0xb7: TRACEI("mov imm, bh\t");
-                   READIMM8; MOV(imm, reg_bh,8); break;
+        case 0xb0: TRACEI("mov imm, al/r8b\t");
+               MOV_IMM8_REXB(reg_a, reg_r8); break;
+        case 0xb1: TRACEI("mov imm, cl/r9b\t");
+               MOV_IMM8_REXB(reg_c, reg_r9); break;
+        case 0xb2: TRACEI("mov imm, dl/r10b\t");
+               MOV_IMM8_REXB(reg_d, reg_r10); break;
+        case 0xb3: TRACEI("mov imm, bl/r11b\t");
+               MOV_IMM8_REXB(reg_b, reg_r11); break;
+        case 0xb4: TRACEI("mov imm, ah/spl/r12b\t");
+               MOV_IMM8_LEGACY_OR_REX(reg_ah, reg_spl, reg_r12); break;
+        case 0xb5: TRACEI("mov imm, ch/bpl/r13b\t");
+               MOV_IMM8_LEGACY_OR_REX(reg_ch, reg_bpl, reg_r13); break;
+        case 0xb6: TRACEI("mov imm, dh/sil/r14b\t");
+               MOV_IMM8_LEGACY_OR_REX(reg_dh, reg_sil, reg_r14); break;
+        case 0xb7: TRACEI("mov imm, bh/dil/r15b\t");
+               MOV_IMM8_LEGACY_OR_REX(reg_bh, reg_dil, reg_r15); break;
 
-        case 0xb8: TRACEI("mov imm, oax\t");
-                   READIMM; MOV(imm, reg_a,oz); break;
-        case 0xb9: TRACEI("mov imm, ocx\t");
-                   READIMM; MOV(imm, reg_c,oz); break;
-        case 0xba: TRACEI("mov imm, odx\t");
-                   READIMM; MOV(imm, reg_d,oz); break;
-        case 0xbb: TRACEI("mov imm, obx\t");
-                   READIMM; MOV(imm, reg_b,oz); break;
-        case 0xbc: TRACEI("mov imm, osp\t");
-                   READIMM; MOV(imm, reg_sp,oz); break;
-        case 0xbd: TRACEI("mov imm, obp\t");
-                   READIMM; MOV(imm, reg_bp,oz); break;
-        case 0xbe: TRACEI("mov imm, osi\t");
-                   READIMM; MOV(imm, reg_si,oz); break;
-        case 0xbf: TRACEI("mov imm, odi\t");
-                   READIMM; MOV(imm, reg_di,oz); break;
+        case 0xb8: TRACEI("mov imm, oax/r8\t");
+                   MOV_IMM_REXB(reg_a, reg_r8); break;
+        case 0xb9: TRACEI("mov imm, ocx/r9\t");
+                   MOV_IMM_REXB(reg_c, reg_r9); break;
+        case 0xba: TRACEI("mov imm, odx/r10\t");
+                   MOV_IMM_REXB(reg_d, reg_r10); break;
+        case 0xbb: TRACEI("mov imm, obx/r11\t");
+                   MOV_IMM_REXB(reg_b, reg_r11); break;
+        case 0xbc: TRACEI("mov imm, osp/r12\t");
+                   MOV_IMM_REXB(reg_sp, reg_r12); break;
+        case 0xbd: TRACEI("mov imm, obp/r13\t");
+                   MOV_IMM_REXB(reg_bp, reg_r13); break;
+        case 0xbe: TRACEI("mov imm, osi/r14\t");
+                   MOV_IMM_REXB(reg_si, reg_r14); break;
+        case 0xbf: TRACEI("mov imm, odi/r15\t");
+                   MOV_IMM_REXB(reg_di, reg_r15); break;
 
 #define GRP2(count, val,z) \
     switch (modrm.opcode) { \
@@ -920,9 +1066,9 @@ restart:
     }
 
         case 0xc0: TRACEI("grp2 imm8, modrm8");
-                   READMODRM; READIMM8; GRP2(imm, modrm_val,8); break;
+                   READMODRM; READIMM8_RM; GRP2(imm, modrm_val,8); break;
         case 0xc1: TRACEI("grp2 imm8, modrm");
-                   READMODRM; READIMM8; GRP2(imm, modrm_val,oz); break;
+                   READMODRM; READIMM8_RM; GRP2(imm, modrm_val,oz); break;
 
         case 0xc2: TRACEI("ret near imm\t");
                    READIMM16; RET_NEAR(imm); break;
@@ -930,7 +1076,7 @@ restart:
                    RET_NEAR(0); break;
 
         case 0xc9: TRACEI("leave");
-                   MOV(reg_bp, reg_sp,oz); POP(reg_bp,oz); break;
+                   MOV(reg_bp, reg_sp,stackz); POP_STACK(reg_bp); break;
 
         case 0xcc: TRACEI("int3");
                    INT(INT_BREAKPOINT); break;
@@ -938,9 +1084,9 @@ restart:
                    READIMM8; INT(imm); break;
 
         case 0xc6: TRACEI("mov imm8, modrm8");
-                   READMODRM; READIMM8; MOV(imm, modrm_val,8); break;
+                   READMODRM; READIMM8_RM; MOV(imm, modrm_val,8); break;
         case 0xc7: TRACEI("mov imm, modrm");
-                   READMODRM; READIMM; MOV(imm, modrm_val,oz); break;
+                   READMODRM; READIMM_SEXT_OZ_RM; MOV(imm, modrm_val,oz); break;
 
         case 0xd0: TRACEI("grp2 1, modrm8");
                    READMODRM; GRP2(1, modrm_val,8); break;
@@ -1095,10 +1241,10 @@ restart:
                    READIMM8; JCXZ_REL(imm); break;
 
         case 0xe8: TRACEI("call near\t");
-                   READIMM; CALL_REL(imm); break;
+                   READREL; CALL_REL(imm); break;
 
         case 0xe9: TRACEI("jmp rel\t");
-                   READIMM; JMP_REL(imm); break;
+                   READREL; JMP_REL(imm); break;
         case 0xeb: TRACEI("jmp rel8\t");
                    READIMM8; JMP_REL(imm); break;
 
@@ -1106,7 +1252,9 @@ restart:
         case 0xf0:
             lockrestart:
             READINSN;
+            READ_OPTIONAL_REX;
             switch (insn) {
+                case 0x64: TRACE("segment fs\n"); SEG_FS(); goto lockrestart;
                 case 0x65: TRACE("segment gs\n"); SEG_GS(); goto lockrestart;
 
                 case 0x66:
@@ -1150,11 +1298,11 @@ restart:
     }
 
                 case 0x80: TRACEI("lock grp1 imm8, modrm8");
-                           READMODRM_MEM; READIMM8; GRP1_ATOMIC(imm, modrm_val,8); break;
+                           READMODRM_MEM; READIMM8_RM; GRP1_ATOMIC(imm, modrm_val,8); break;
                 case 0x81: TRACEI("lock grp1 imm, modrm");
-                           READMODRM_MEM; READIMM; GRP1_ATOMIC(imm, modrm_val,oz); break;
+                           READMODRM_MEM; READIMM_SEXT_OZ_RM; GRP1_ATOMIC(imm, modrm_val,oz); break;
                 case 0x83: TRACEI("lock grp1 imm8, modrm");
-                           READMODRM_MEM; READIMM8; GRP1_ATOMIC(imm, modrm_val,oz); break;
+                           READMODRM_MEM; READIMM8_RM; GRP1_ATOMIC(imm, modrm_val,oz); break;
 
 #undef GRP1_ATOMIC
 
@@ -1176,7 +1324,7 @@ restart:
         default: UNDEFINED; \
     }
                         case 0xba: TRACEI("lock grp8 imm8, modrm");
-                                   READMODRM; READIMM8; GRP8_ATOMIC(imm, modrm_val,oz); break;
+                                   READMODRM; READIMM8_RM; GRP8_ATOMIC(imm, modrm_val,oz); break;
 #undef GRP8_ATOMIC
 
                         case 0xb0: TRACEI("lock cmpxchg reg8, modrm8");
@@ -1217,6 +1365,7 @@ restart:
 
         case 0xf2:
             READINSN;
+            READ_OPTIONAL_REX;
             switch (insn) {
                 case 0x0f:
                     READINSN;
@@ -1249,10 +1398,10 @@ restart:
                                    READMODRM; V_OP(single_fmax, xmm_modrm_val, xmm_modrm_reg,64); break;
 
                         case 0x70: TRACEI("pshuflw xmm:modrm, xmm, imm8");
-                                   READMODRM; READIMM8; V_OP_IMM(shuffle_lw, xmm_modrm_val, xmm_modrm_reg,128); break;
+                                   READMODRM; READIMM8_RM; V_OP_IMM(shuffle_lw, xmm_modrm_val, xmm_modrm_reg,128); break;
 
                         case 0xc2: TRACEI("cmpsd xmm:modrm, xmm, imm8");
-                                   READMODRM; READIMM8; V_OP_IMM(single_fcmp, xmm_modrm_val, xmm_modrm_reg,64); break;
+                                   READMODRM; READIMM8_RM; V_OP_IMM(single_fcmp, xmm_modrm_val, xmm_modrm_reg,64); break;
 
                         case 0x18 ... 0x1f: TRACEI("rep nop modrm\t"); READMODRM; break;
                         default: TRACE("undefined"); UNDEFINED;
@@ -1269,6 +1418,7 @@ restart:
 
         case 0xf3:
             READINSN;
+            READ_OPTIONAL_REX;
             switch (insn) {
                 case 0x0f:
                     // 2-byte opcode prefix
@@ -1312,7 +1462,7 @@ restart:
                         case 0x18 ... 0x1f: TRACEI("repz nop modrm\t"); READMODRM; break;
 
                         case 0x70: TRACEI("pshufhw xmm:modrm, xmm, imm8");
-                                   READMODRM; READIMM8; V_OP_IMM(shuffle_hw, xmm_modrm_val, xmm_modrm_reg,128); break;
+                                   READMODRM; READIMM8_RM; V_OP_IMM(shuffle_hw, xmm_modrm_val, xmm_modrm_reg,128); break;
 
                         case 0x7f: TRACEI("movdqu xmm, xmm:modrm");
                                    READMODRM; VMOV(xmm_modrm_reg, xmm_modrm_val,128); break;
@@ -1325,7 +1475,7 @@ restart:
                                    READMODRM; BSR(modrm_val, modrm_reg,oz); break;
 
                         case 0xc2: TRACEI("cmpss xmm:modrm, xmm, imm8");
-                                   READMODRM; READIMM8; V_OP_IMM(single_fcmp, xmm_modrm_val, xmm_modrm_reg,32); break;
+                                   READMODRM; READIMM8_RM; V_OP_IMM(single_fcmp, xmm_modrm_val, xmm_modrm_reg,32); break;
 
                         default: TRACE("undefined"); UNDEFINED;
                     }
@@ -1357,7 +1507,7 @@ restart:
     switch (modrm.opcode) { \
         case 0: \
         case 1: TRACE("test imm "); \
-                READIMM##z; TEST(imm, val,z); break; \
+                READTESTIMM(z); TEST(imm, val,z); break; \
         case 2: TRACE("not"); \
                 NOT(val,z); break; \
         case 3: TRACE("neg"); \
@@ -1396,7 +1546,8 @@ restart:
                 JMP(val); break; \
         case 5: TRACE("jmp indirect far"); UNDEFINED; \
         case 6: TRACE("push"); \
-                PUSH(val,z); break; \
+                if ((z) == 8) UNDEFINED; \
+                PUSH_STACK(val); break; \
         case 7: TRACE("undefined"); UNDEFINED; \
     }
 

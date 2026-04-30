@@ -9,16 +9,26 @@ dword_t sys_stime(addr_t time);
 #define CLOCK_PROCESS_CPUTIME_ID_ 2
 #define CLOCK_REALTIME_COARSE_ 5
 dword_t sys_clock_gettime(dword_t clock, addr_t tp);
+dword_t sys_clock_gettime_x86_64(dword_t clock, addr_t tp);
 dword_t sys_clock_settime(dword_t clock, addr_t tp);
 dword_t sys_clock_getres(dword_t clock, addr_t res_addr);
+dword_t sys_clock_getres_x86_64(dword_t clock, addr_t res_addr);
 
 struct timeval_ {
     dword_t sec;
     dword_t usec;
 };
+struct timeval_x86_64 {
+    qword_t sec;
+    qword_t usec;
+};
 struct timespec_ {
     dword_t sec;
     dword_t nsec;
+};
+struct timespec_x86_64 {
+    qword_t sec;
+    qword_t nsec;
 };
 struct timezone_ {
     dword_t minuteswest;
@@ -36,7 +46,21 @@ static inline struct timespec convert_timespec(struct timespec_ t) {
     return ts;
 }
 
+static inline struct timespec convert_timespec_x86_64(struct timespec_x86_64 t) {
+    struct timespec ts;
+    ts.tv_sec = t.sec;
+    ts.tv_nsec = t.nsec;
+    return ts;
+}
+
 static inline struct timespec convert_timeval(struct timeval_ t) {
+    struct timespec ts;
+    ts.tv_sec = t.sec;
+    ts.tv_nsec = t.usec * 1000;
+    return ts;
+}
+
+static inline struct timespec convert_timeval_x86_64(struct timeval_x86_64 t) {
     struct timespec ts;
     ts.tv_sec = t.sec;
     ts.tv_nsec = t.usec * 1000;
@@ -73,7 +97,9 @@ int_t sys_timerfd_settime(fd_t f, int_t flags, addr_t new_value_addr, addr_t old
 
 dword_t sys_times(addr_t tbuf);
 dword_t sys_nanosleep(addr_t req, addr_t rem);
+dword_t sys_nanosleep_x86_64(addr_t req, addr_t rem);
 dword_t sys_gettimeofday(addr_t tv, addr_t tz);
+dword_t sys_gettimeofday_x86_64(addr_t tv, addr_t tz);
 dword_t sys_settimeofday(addr_t tv, addr_t tz);
 
 

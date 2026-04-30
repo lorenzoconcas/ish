@@ -55,22 +55,29 @@ dword_t sys_stime(addr_t UNUSED(time)) {
     return _EPERM;
 }
 
+static int get_clock_time(dword_t clock, struct timespec *ts) {
+    if (clock == CLOCK_PROCESS_CPUTIME_ID_) {
+        // FIXME this is thread usage, not process usage
+        struct rusage_ rusage = rusage_get_current();
+        ts->tv_sec = rusage.utime.sec;
+        ts->tv_nsec = rusage.utime.usec * 1000;
+    } else {
+        clockid_t clock_id;
+        if (clockid_to_real(clock, &clock_id)) return _EINVAL;
+        int err = clock_gettime(clock_id, ts);
+        if (err < 0)
+            return errno_map();
+    }
+    return 0;
+}
+
 dword_t sys_clock_gettime(dword_t clock, addr_t tp) {
     STRACE("clock_gettime(%d, 0x%x)", clock, tp);
 
     struct timespec ts;
-    if (clock == CLOCK_PROCESS_CPUTIME_ID_) {
-        // FIXME this is thread usage, not process usage
-        struct rusage_ rusage = rusage_get_current();
-        ts.tv_sec = rusage.utime.sec;
-        ts.tv_nsec = rusage.utime.usec * 1000;
-    } else {
-        clockid_t clock_id;
-        if (clockid_to_real(clock, &clock_id)) return _EINVAL;
-        int err = clock_gettime(clock_id, &ts);
-        if (err < 0)
-            return errno_map();
-    }
+    int err = get_clock_time(clock, &ts);
+    if (err < 0)
+        return err;
     struct timespec_ t;
     t.sec = ts.tv_sec;
     t.nsec = ts.tv_nsec;
@@ -80,16 +87,54 @@ dword_t sys_clock_gettime(dword_t clock, addr_t tp) {
     return 0;
 }
 
-dword_t sys_clock_getres(dword_t clock, addr_t res_addr) {
-    STRACE("clock_getres(%d, %#x)", clock, res_addr);
+dword_t sys_clock_gettime_x86_64(dword_t clock, addr_t tp) {
+    STRACE("clock_gettime_x86_64(%d, 0x%x)", clock, tp);
+
+    struct timespec ts;
+    int err = get_clock_time(clock, &ts);
+    if (err < 0)
+        return err;
+    struct timespec_x86_64 t;
+    t.sec = ts.tv_sec;
+    t.nsec = ts.tv_nsec;
+    if (user_put(tp, t))
+        return _EFAULT;
+    STRACE(" {%llds %lldns}", (long long) t.sec, (long long) t.nsec);
+    return 0;
+}
+
+static int get_clock_res(dword_t clock, struct timespec *res) {
     clockid_t clock_id;
     if (clockid_to_real(clock, &clock_id)) return _EINVAL;
-
-    struct timespec res;
-    int err = clock_getres(clock_id, &res);
+    int err = clock_getres(clock_id, res);
     if (err < 0)
         return errno_map();
+    return 0;
+}
+
+dword_t sys_clock_getres(dword_t clock, addr_t res_addr) {
+    STRACE("clock_getres(%d, %#x)", clock, res_addr);
+
+    struct timespec res;
+    int err = get_clock_res(clock, &res);
+    if (err < 0)
+        return err;
     struct timespec_ t;
+    t.sec = res.tv_sec;
+    t.nsec = res.tv_nsec;
+    if (user_put(res_addr, t))
+        return _EFAULT;
+    return 0;
+}
+
+dword_t sys_clock_getres_x86_64(dword_t clock, addr_t res_addr) {
+    STRACE("clock_getres_x86_64(%d, %#x)", clock, res_addr);
+
+    struct timespec res;
+    int err = get_clock_res(clock, &res);
+    if (err < 0)
+        return err;
+    struct timespec_x86_64 t;
     t.sec = res.tv_sec;
     t.nsec = res.tv_nsec;
     if (user_put(res_addr, t))
@@ -202,6 +247,26 @@ dword_t sys_nanosleep(addr_t req_addr, addr_t rem_addr) {
     return 0;
 }
 
+dword_t sys_nanosleep_x86_64(addr_t req_addr, addr_t rem_addr) {
+    struct timespec_x86_64 req_ts;
+    if (user_get(req_addr, req_ts))
+        return _EFAULT;
+    STRACE("nanosleep_x86_64({%lld, %lld}, 0x%x",
+            (long long) req_ts.sec, (long long) req_ts.nsec, rem_addr);
+    struct timespec req = convert_timespec_x86_64(req_ts);
+    struct timespec rem;
+    if (nanosleep(&req, &rem) < 0)
+        return errno_map();
+    if (rem_addr != 0) {
+        struct timespec_x86_64 rem_ts;
+        rem_ts.sec = rem.tv_sec;
+        rem_ts.nsec = rem.tv_nsec;
+        if (user_put(rem_addr, rem_ts))
+            return _EFAULT;
+    }
+    return 0;
+}
+
 dword_t sys_times(addr_t tbuf) {
     STRACE("times(0x%x)", tbuf);
     if (tbuf) {
@@ -225,6 +290,25 @@ dword_t sys_gettimeofday(addr_t tv, addr_t tz) {
         return errno_map();
     }
     struct timeval_ tv_;
+    struct timezone_ tz_;
+    tv_.sec = timeval.tv_sec;
+    tv_.usec = timeval.tv_usec;
+    tz_.minuteswest = timezone.tz_minuteswest;
+    tz_.dsttime = timezone.tz_dsttime;
+    if ((tv && user_put(tv, tv_)) || (tz && user_put(tz, tz_))) {
+        return _EFAULT;
+    }
+    return 0;
+}
+
+dword_t sys_gettimeofday_x86_64(addr_t tv, addr_t tz) {
+    STRACE("gettimeofday_x86_64(0x%x, 0x%x)", tv, tz);
+    struct timeval timeval;
+    struct timezone timezone;
+    if (gettimeofday(&timeval, &timezone) < 0) {
+        return errno_map();
+    }
+    struct timeval_x86_64 tv_;
     struct timezone_ tz_;
     tv_.sec = timeval.tv_sec;
     tv_.usec = timeval.tv_usec;

@@ -3,6 +3,7 @@
 # register assignments
 #define _esp r8d
 #define _sp r8w
+#define _rsp r8
 #define _ip r9
 #define _eip r9d
 #define _tmp r10d
@@ -35,7 +36,9 @@
     movl %_addr, %r15d
     shrl $22, %r15d
     xor %r15d, %r14d
-    shll $4, %r14d
+    # struct tlb_entry is now 24 bytes; convert hashed index to byte offset.
+    leal (%r14d,%r14d,2), %r14d
+    shll $3, %r14d
     movl %_addr, %r15d
     andl $0xfff, %r15d
     cmpl $(0x1000-(\size/8)), %r15d
@@ -93,6 +96,8 @@ crosspage_store_\id :
     .endr
     .if \size == 32
         \macro reg_sp, _esp
+    .elseif \size == 64
+        \macro reg_sp, _rsp
     .else
         \macro reg_sp, _sp
     .endif
@@ -109,6 +114,8 @@ crosspage_store_\id :
             \macro \args, \size, w, w
         .elseif \size == 32
             \macro \args, \size, d, l
+        .elseif \size == 64
+            \macro \args, \size, , q
         .else
             .error "bad size"
         .endif
@@ -119,6 +126,8 @@ crosspage_store_\id :
             \macro \size, w, w
         .elseif \size == 32
             \macro \size, d, l
+        .elseif \size == 64
+            \macro \size, , q
         .else
             .error "bad size"
         .endif
@@ -151,10 +160,16 @@ crosspage_store_\id :
     movl DOLLAR(0), CPU_cf(%_cpu)
 .endm
 .macro setf_zsp res, ss
-    .ifnc \ss,l
-        movs\ss\()l \res, %_tmp
-    .endif
-    movl %_tmp, CPU_res(%_cpu)
+    .ifc \ss,b
+        movsbq \res, %r14
+    .else; .ifc \ss,w
+        movswq \res, %r14
+    .else; .ifc \ss,l
+        movslq \res, %r14
+    .else
+        movq \res, %r14
+    .endif; .endif; .endif
+    movq %r14, CPU_res(%_cpu)
     orl $(ZF_RES|SF_RES|PF_RES), CPU_flags_res(%_cpu)
 .endm
 
@@ -188,17 +203,25 @@ crosspage_store_\id :
 .endm
 
 .macro load_regs
-    movl CPU_eax(%_cpu), %eax
-    movl CPU_ebx(%_cpu), %ebx
-    movl CPU_ecx(%_cpu), %ecx
-    movl CPU_edx(%_cpu), %edx
-    movl CPU_esi(%_cpu), %esi
-    movl CPU_edi(%_cpu), %edi
-    movl CPU_ebp(%_cpu), %ebp
-    movl CPU_esp(%_cpu), %_esp
+    movq CPU_rax(%_cpu), %rax
+    movq CPU_rbx(%_cpu), %rbx
+    movq CPU_rcx(%_cpu), %rcx
+    movq CPU_rdx(%_cpu), %rdx
+    movq CPU_rsi(%_cpu), %rsi
+    movq CPU_rdi(%_cpu), %rdi
+    movq CPU_rbp(%_cpu), %rbp
+    movq CPU_rsp(%_cpu), %_rsp
 .endm
 
 .macro save_regs
+    movq %rax, CPU_rax(%_cpu)
+    movq %rbx, CPU_rbx(%_cpu)
+    movq %rcx, CPU_rcx(%_cpu)
+    movq %rdx, CPU_rdx(%_cpu)
+    movq %rsi, CPU_rsi(%_cpu)
+    movq %rdi, CPU_rdi(%_cpu)
+    movq %rbp, CPU_rbp(%_cpu)
+    movq %_rsp, CPU_rsp(%_cpu)
     movl %eax, CPU_eax(%_cpu)
     movl %ebx, CPU_ebx(%_cpu)
     movl %ecx, CPU_ecx(%_cpu)

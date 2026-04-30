@@ -9,9 +9,12 @@
 #include "util/sync.h"
 #include "misc.h"
 
+struct pt_dir;
+
 struct mem {
-    struct pt_entry **pgdir;
-    int pgdir_used;
+    struct list pt_dirs;
+    struct pt_dir *pt_dir_cache;
+    size_t pt_dir_count;
 
     struct mmu mmu;
 
@@ -28,6 +31,9 @@ struct pt_entry *mem_pt(struct mem *mem, page_t page);
 // Increment *page, skipping over unallocated page directories. Intended to be
 // used as the incremenent in a for loop to traverse mappings.
 void mem_next_page(struct mem *mem, page_t *page);
+// Return the first mapped page greater than or equal to page, or BAD_PAGE if
+// there isn't one.
+page_t mem_next_mapped_page(struct mem *mem, page_t page);
 
 #define BYTES_ROUND_DOWN(bytes) (PAGE(bytes) << PAGE_BITS)
 #define BYTES_ROUND_UP(bytes) (PAGE_ROUND_UP(bytes) << PAGE_BITS)
@@ -71,6 +77,7 @@ struct pt_entry {
 #define P_SHARED (1 << 7)
 
 bool pt_is_hole(struct mem *mem, page_t start, pages_t pages);
+page_t pt_find_hole_range(struct mem *mem, page_t low, page_t high, pages_t size);
 page_t pt_find_hole(struct mem *mem, pages_t size);
 
 // Map memory + offset into fake memory, unmapping existing mappings. Takes

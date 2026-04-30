@@ -1,5 +1,6 @@
 #include "debug.h"
 #include "kernel/task.h"
+#include "kernel/cpu.h"
 #include "fs/fd.h"
 #include "kernel/calls.h"
 #include "fs/tty.h"
@@ -56,7 +57,7 @@ static struct tgroup *tgroup_copy(struct tgroup *old_group) {
 static int copy_task(struct task *task, dword_t flags, addr_t stack, addr_t ptid_addr, addr_t tls_addr, addr_t ctid_addr) {
     task->vfork = NULL;
     if (stack != 0)
-        task->cpu.esp = stack;
+        task_cpu_set_stack_pointer(task, stack);
 
     int err;
     struct mm *mm = task->mm;
@@ -161,7 +162,7 @@ dword_t sys_clone(dword_t flags, addr_t stack, addr_t ptid, addr_t tls, addr_t c
         unlock(&pids_lock);
         return err;
     }
-    task->cpu.eax = 0;
+    task_cpu_set_syscall_result(task, 0);
 
     struct vfork_info vfork;
     if (flags & CLONE_VFORK_) {
@@ -194,6 +195,10 @@ dword_t sys_clone(dword_t flags, addr_t stack, addr_t ptid, addr_t tls, addr_t c
     }
 
     return pid;
+}
+
+dword_t sys_clone_x86_64(dword_t flags, addr_t stack, addr_t ptid, addr_t ctid, addr_t tls) {
+    return sys_clone(flags, stack, ptid, tls, ctid);
 }
 
 dword_t sys_fork() {

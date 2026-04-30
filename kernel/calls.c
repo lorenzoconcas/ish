@@ -1,6 +1,7 @@
 #include <string.h>
 #include "debug.h"
 #include "kernel/calls.h"
+#include "kernel/cpu.h"
 #include "emu/interrupt.h"
 #include "kernel/memory.h"
 #include "kernel/signal.h"
@@ -19,10 +20,14 @@ dword_t syscall_success_stub(void) {
     return 0;
 }
 
-#if is_gcc(8)
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wcast-function-type-mismatch"
+#elif is_gcc(8)
+#pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-function-type"
 #endif
-syscall_t syscall_table[] = {
+static syscall_t syscall_table_x86_32[] = {
     [1]   = (syscall_t) sys_exit,
     [2]   = (syscall_t) sys_fork,
     [3]   = (syscall_t) sys_read,
@@ -252,25 +257,218 @@ syscall_t syscall_table[] = {
     [439] = (syscall_t) syscall_silent_stub, // faccessat2
 };
 
-#define NUM_SYSCALLS (sizeof(syscall_table) / sizeof(syscall_table[0]))
+static syscall_t lookup_syscall_x86_32(addr_t syscall_num) {
+    size_t num_syscalls = sizeof(syscall_table_x86_32) / sizeof(syscall_table_x86_32[0]);
+    if (syscall_num >= num_syscalls)
+        return NULL;
+    return syscall_table_x86_32[syscall_num];
+}
+
+static syscall_t lookup_syscall_x86_64(addr_t syscall_num) {
+    // Numbering follows Linux's official x86_64 table in
+    // arch/x86/entry/syscalls/syscall_64.tbl.
+    // Only syscalls whose argument order and userspace ABI already match the
+    // current runtime are wired here. mmap/clone/signal-entry work still need
+    // dedicated x86_64 handling before they can be enabled safely.
+#define X64_SYSCALL(num, fn) case num: return (syscall_t) fn
+    switch (syscall_num) {
+        X64_SYSCALL(0, sys_read);
+        X64_SYSCALL(1, sys_write);
+        X64_SYSCALL(2, sys_open);
+        X64_SYSCALL(3, sys_close);
+        X64_SYSCALL(4, sys_stat_x86_64);
+        X64_SYSCALL(5, sys_fstat_x86_64);
+        X64_SYSCALL(6, sys_lstat_x86_64);
+        X64_SYSCALL(7, sys_poll);
+        X64_SYSCALL(8, sys_lseek_x86_64);
+        X64_SYSCALL(9, sys_mmap64);
+        X64_SYSCALL(10, sys_mprotect);
+        X64_SYSCALL(11, sys_munmap);
+        X64_SYSCALL(12, sys_brk);
+        X64_SYSCALL(13, sys_rt_sigaction_x86_64);
+        X64_SYSCALL(14, sys_rt_sigprocmask);
+        X64_SYSCALL(16, sys_ioctl);
+        X64_SYSCALL(19, sys_readv);
+        X64_SYSCALL(20, sys_writev);
+        X64_SYSCALL(23, sys_select_x86_64);
+        X64_SYSCALL(21, sys_access);
+        X64_SYSCALL(22, sys_pipe);
+        X64_SYSCALL(24, sys_sched_yield);
+        X64_SYSCALL(25, sys_mremap);
+        X64_SYSCALL(32, sys_dup);
+        X64_SYSCALL(33, sys_dup2);
+        X64_SYSCALL(35, sys_nanosleep_x86_64);
+        X64_SYSCALL(39, sys_getpid);
+        X64_SYSCALL(41, sys_socket);
+        X64_SYSCALL(42, sys_connect);
+        X64_SYSCALL(44, sys_sendto);
+        X64_SYSCALL(45, sys_recvfrom);
+        X64_SYSCALL(46, sys_sendmsg);
+        X64_SYSCALL(47, sys_recvmsg);
+        X64_SYSCALL(48, sys_shutdown);
+        X64_SYSCALL(49, sys_bind);
+        X64_SYSCALL(50, sys_listen);
+        X64_SYSCALL(51, sys_getsockname);
+        X64_SYSCALL(52, sys_getpeername);
+        X64_SYSCALL(53, sys_socketpair);
+        X64_SYSCALL(54, sys_setsockopt);
+        X64_SYSCALL(55, sys_getsockopt);
+        X64_SYSCALL(56, sys_clone_x86_64);
+        X64_SYSCALL(57, sys_fork);
+        X64_SYSCALL(58, sys_vfork);
+        X64_SYSCALL(59, sys_execve);
+        X64_SYSCALL(60, sys_exit);
+        X64_SYSCALL(61, sys_wait4);
+        X64_SYSCALL(62, sys_kill);
+        X64_SYSCALL(63, sys_uname);
+        X64_SYSCALL(72, sys_fcntl);
+        X64_SYSCALL(73, sys_flock);
+        X64_SYSCALL(74, sys_fsync);
+        X64_SYSCALL(75, sys_fsync);
+        X64_SYSCALL(79, sys_getcwd);
+        X64_SYSCALL(80, sys_chdir);
+        X64_SYSCALL(81, sys_fchdir);
+        X64_SYSCALL(82, sys_rename);
+        X64_SYSCALL(83, sys_mkdir);
+        X64_SYSCALL(84, sys_rmdir);
+        X64_SYSCALL(86, sys_link);
+        X64_SYSCALL(87, sys_unlink);
+        X64_SYSCALL(88, sys_symlink);
+        X64_SYSCALL(89, sys_readlink);
+        X64_SYSCALL(90, sys_chmod);
+        X64_SYSCALL(91, sys_fchmod);
+        X64_SYSCALL(94, sys_lchown);
+        X64_SYSCALL(95, sys_umask);
+        X64_SYSCALL(96, sys_gettimeofday_x86_64);
+        X64_SYSCALL(98, sys_getrusage);
+        X64_SYSCALL(99, sys_sysinfo);
+        X64_SYSCALL(100, sys_times);
+        X64_SYSCALL(102, sys_getuid);
+        X64_SYSCALL(104, sys_getgid);
+        X64_SYSCALL(107, sys_geteuid);
+        X64_SYSCALL(108, sys_getegid);
+        X64_SYSCALL(109, sys_setpgid);
+        X64_SYSCALL(110, sys_getppid);
+        X64_SYSCALL(111, sys_getpgrp);
+        X64_SYSCALL(112, sys_setsid);
+        X64_SYSCALL(113, sys_setreuid);
+        X64_SYSCALL(114, sys_setregid);
+        X64_SYSCALL(115, sys_getgroups);
+        X64_SYSCALL(116, sys_setgroups);
+        X64_SYSCALL(117, sys_setresuid);
+        X64_SYSCALL(118, sys_getresuid);
+        X64_SYSCALL(119, sys_setresgid);
+        X64_SYSCALL(120, sys_getresgid);
+        X64_SYSCALL(121, sys_getpgid);
+        X64_SYSCALL(124, sys_getsid);
+        X64_SYSCALL(125, sys_capget);
+        X64_SYSCALL(126, sys_capset);
+        X64_SYSCALL(135, sys_personality);
+        X64_SYSCALL(137, sys_statfs_x86_64);
+        X64_SYSCALL(138, sys_fstatfs_x86_64);
+        X64_SYSCALL(140, sys_getpriority);
+        X64_SYSCALL(141, sys_setpriority);
+        X64_SYSCALL(149, sys_mlock);
+        X64_SYSCALL(157, sys_prctl);
+        X64_SYSCALL(158, sys_arch_prctl);
+        X64_SYSCALL(161, sys_chroot);
+        X64_SYSCALL(169, sys_reboot);
+        X64_SYSCALL(170, sys_sethostname);
+        X64_SYSCALL(186, sys_gettid);
+        X64_SYSCALL(200, sys_tkill);
+        X64_SYSCALL(201, sys_time);
+        X64_SYSCALL(202, sys_futex);
+        X64_SYSCALL(203, sys_sched_setaffinity);
+        X64_SYSCALL(204, sys_sched_getaffinity);
+        X64_SYSCALL(217, sys_getdents64);
+        X64_SYSCALL(218, sys_set_tid_address);
+        X64_SYSCALL(222, sys_timer_create);
+        X64_SYSCALL(223, sys_timer_settime);
+        X64_SYSCALL(226, sys_timer_delete);
+        X64_SYSCALL(227, sys_clock_settime);
+        X64_SYSCALL(228, sys_clock_gettime_x86_64);
+        X64_SYSCALL(229, sys_clock_getres_x86_64);
+        X64_SYSCALL(231, sys_exit_group);
+        X64_SYSCALL(232, sys_epoll_wait);
+        X64_SYSCALL(233, sys_epoll_ctl);
+        X64_SYSCALL(234, sys_tgkill);
+        X64_SYSCALL(235, sys_utimes);
+        X64_SYSCALL(237, sys_mbind);
+        X64_SYSCALL(247, sys_waitid);
+        X64_SYSCALL(251, sys_ioprio_set);
+        X64_SYSCALL(252, sys_ioprio_get);
+        X64_SYSCALL(257, sys_openat);
+        X64_SYSCALL(258, sys_mkdirat);
+        X64_SYSCALL(259, sys_mknodat);
+        X64_SYSCALL(260, sys_fchownat);
+        X64_SYSCALL(262, sys_newfstatat_x86_64);
+        X64_SYSCALL(263, sys_unlinkat);
+        X64_SYSCALL(264, sys_renameat);
+        X64_SYSCALL(265, sys_linkat);
+        X64_SYSCALL(266, sys_symlinkat);
+        X64_SYSCALL(267, sys_readlinkat);
+        X64_SYSCALL(268, sys_fchmodat);
+        X64_SYSCALL(269, sys_faccessat);
+        X64_SYSCALL(270, sys_pselect_x86_64);
+        X64_SYSCALL(271, sys_ppoll_x86_64);
+        X64_SYSCALL(273, sys_set_robust_list);
+        X64_SYSCALL(274, sys_get_robust_list);
+        X64_SYSCALL(280, sys_utimensat);
+        X64_SYSCALL(281, sys_epoll_pwait);
+        X64_SYSCALL(283, sys_timerfd_create);
+        X64_SYSCALL(290, sys_eventfd2);
+        X64_SYSCALL(291, sys_epoll_create);
+        X64_SYSCALL(292, sys_dup3);
+        X64_SYSCALL(293, sys_pipe2);
+        X64_SYSCALL(302, sys_prlimit64);
+        X64_SYSCALL(307, sys_sendmmsg);
+        X64_SYSCALL(316, sys_renameat2);
+        X64_SYSCALL(318, sys_getrandom);
+        X64_SYSCALL(332, sys_statx);
+        X64_SYSCALL(377, sys_copy_file_range);
+        X64_SYSCALL(439, syscall_silent_stub);
+        default:
+            return NULL;
+    }
+#undef X64_SYSCALL
+}
+
+static syscall_t lookup_syscall(enum guest_arch arch, addr_t syscall_num) {
+    switch (arch) {
+        case GUEST_ARCH_X86_32:
+            return lookup_syscall_x86_32(syscall_num);
+        case GUEST_ARCH_X86_64:
+            return lookup_syscall_x86_64(syscall_num);
+    }
+    return NULL;
+}
 
 void dump_stack(int lines);
 
 void handle_interrupt(int interrupt) {
     struct cpu_state *cpu = &current->cpu;
     if (interrupt == INT_SYSCALL) {
-        unsigned syscall_num = cpu->eax;
-        if (syscall_num >= NUM_SYSCALLS || syscall_table[syscall_num] == NULL) {
-            printk("%d(%s) missing syscall %d\n", current->pid, current->comm, syscall_num);
-            cpu->eax = _ENOSYS;
+        addr_t syscall_num = task_cpu_syscall_number(current);
+        syscall_t syscall = lookup_syscall(task_cpu_abi(current)->arch, syscall_num);
+        if (syscall == NULL) {
+            printk("%d(%s) missing syscall %#llx\n", current->pid, current->comm,
+                    (unsigned long long) syscall_num);
+            task_cpu_set_syscall_result(current, _ENOSYS);
         } else {
-            if (syscall_table[syscall_num] == (syscall_t) syscall_stub) {
-                printk("%d(%s) stub syscall %d\n", current->pid, current->comm, syscall_num);
+            if (syscall == (syscall_t) syscall_stub) {
+                printk("%d(%s) stub syscall %#llx\n", current->pid, current->comm,
+                        (unsigned long long) syscall_num);
             }
-            STRACE("%d call %-3d ", current->pid, syscall_num);
-            int result = syscall_table[syscall_num](cpu->ebx, cpu->ecx, cpu->edx, cpu->esi, cpu->edi, cpu->ebp);
-            STRACE(" = 0x%x\n", result);
-            cpu->eax = result;
+            STRACE("%d call %-3llu ", current->pid, (unsigned long long) syscall_num);
+            addr_t result = syscall(
+                    task_cpu_syscall_arg(current, 0),
+                    task_cpu_syscall_arg(current, 1),
+                    task_cpu_syscall_arg(current, 2),
+                    task_cpu_syscall_arg(current, 3),
+                    task_cpu_syscall_arg(current, 4),
+                    task_cpu_syscall_arg(current, 5));
+            STRACE(" = 0x%llx\n", (unsigned long long) result);
+            task_cpu_set_syscall_result(current, result);
         }
     } else if (interrupt == INT_GPF) {
         // some page faults, such as stack growing or CoW clones, are handled by mem_ptr
@@ -278,7 +476,10 @@ void handle_interrupt(int interrupt) {
         void *ptr = mem_ptr(current->mem, cpu->segfault_addr, cpu->segfault_was_write ? MEM_WRITE : MEM_READ);
         read_wrunlock(&current->mem->lock);
         if (ptr == NULL) {
-            printk("%d page fault on 0x%x at 0x%x\n", current->pid, cpu->segfault_addr, cpu->eip);
+            addr_t ip = task_cpu_instruction_pointer(current);
+            printk("%d page fault on %#llx at %#llx\n", current->pid,
+                    (unsigned long long) cpu->segfault_addr,
+                    (unsigned long long) ip);
             struct siginfo_ info = {
                 .code = mem_segv_reason(current->mem, cpu->segfault_addr),
                 .fault.addr = cpu->segfault_addr,
@@ -287,10 +488,11 @@ void handle_interrupt(int interrupt) {
             deliver_signal(current, SIGSEGV_, info);
         }
     } else if (interrupt == INT_UNDEFINED) {
-        printk("%d illegal instruction at 0x%x: ", current->pid, cpu->eip);
+        addr_t ip = task_cpu_instruction_pointer(current);
+        printk("%d illegal instruction at %#llx: ", current->pid, (unsigned long long) ip);
         for (int i = 0; i < 8; i++) {
             uint8_t b;
-            if (user_get(cpu->eip + i, b))
+            if (user_get(ip + i, b))
                 break;
             printk("%02x ", b);
         }
@@ -298,7 +500,7 @@ void handle_interrupt(int interrupt) {
         dump_stack(8);
         struct siginfo_ info = {
             .code = SI_KERNEL_,
-            .fault.addr = cpu->eip,
+            .fault.addr = ip,
         };
         deliver_signal(current, SIGILL_, info);
     } else if (interrupt == INT_BREAKPOINT) {
@@ -327,6 +529,12 @@ void handle_interrupt(int interrupt) {
         wait_for_ignore_signals(&group->stopped_cond, &group->lock, NULL);
     unlock(&group->lock);
 }
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif is_gcc(8)
+#pragma GCC diagnostic pop
+#endif
 
 void dump_maps(void) {
     extern void proc_maps_dump(struct task *task, struct proc_data *buf);
@@ -361,6 +569,45 @@ void dump_mem(addr_t start, uint_t len) {
 }
 
 void dump_stack(int lines) {
+    const struct guest_abi *abi = task_cpu_abi(current);
+    if (abi->arch == GUEST_ARCH_X86_64) {
+        struct cpu_state *cpu = &current->cpu;
+        printk("stack at %llx, base at %llx, ip at %llx\n",
+                (unsigned long long) cpu->rsp,
+                (unsigned long long) cpu->rbp,
+                (unsigned long long) cpu->rip);
+        printk("rax=%016llx rbx=%016llx rcx=%016llx rdx=%016llx\n",
+                (unsigned long long) cpu->rax,
+                (unsigned long long) cpu->rbx,
+                (unsigned long long) cpu->rcx,
+                (unsigned long long) cpu->rdx);
+        printk("rsi=%016llx rdi=%016llx rbp=%016llx rsp=%016llx\n",
+                (unsigned long long) cpu->rsi,
+                (unsigned long long) cpu->rdi,
+                (unsigned long long) cpu->rbp,
+                (unsigned long long) cpu->rsp);
+        printk("r8 =%016llx r9 =%016llx r10=%016llx r11=%016llx\n",
+                (unsigned long long) cpu->r8,
+                (unsigned long long) cpu->r9,
+                (unsigned long long) cpu->r10,
+                (unsigned long long) cpu->r11);
+        printk("r12=%016llx r13=%016llx r14=%016llx r15=%016llx\n",
+                (unsigned long long) cpu->r12,
+                (unsigned long long) cpu->r13,
+                (unsigned long long) cpu->r14,
+                (unsigned long long) cpu->r15);
+        printk("eflags=%08x flags_res=%02x res=%016llx cf=%u of=%u zf=%u sf=%u pf=%u\n",
+                cpu->eflags,
+                cpu->flags_res,
+                (unsigned long long) cpu->res,
+                cpu->cf,
+                cpu->of,
+                ZF ? 1 : 0,
+                SF ? 1 : 0,
+                PF ? 1 : 0);
+        dump_mem((addr_t) cpu->rsp, lines * sizeof(dword_t) * 8);
+        return;
+    }
     printk("stack at %x, base at %x, ip at %x\n", current->cpu.esp, current->cpu.ebp, current->cpu.eip);
     dump_mem(current->cpu.esp, lines * sizeof(dword_t) * 8);
 }

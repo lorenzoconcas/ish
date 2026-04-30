@@ -11,6 +11,18 @@
 #import "NSObject+SaneKVO.h"
 #include "tools/fakefs.h"
 
+#ifndef ISH_GUEST_ARCH_X86_64
+#define ISH_GUEST_ARCH_X86_64 0
+#endif
+
+static NSString *BundledRootName(void) {
+    return ISH_GUEST_ARCH_X86_64 ? @"x86_64-alpine-ishsh" : @"default";
+}
+
+static BOOL ShouldPreferBundledRoot(void) {
+    return ISH_GUEST_ARCH_X86_64;
+}
+
 static NSURL *RootsDir(void) {
     static NSURL *rootsDir;
     static dispatch_once_t token;
@@ -42,11 +54,13 @@ static NSString *kDefaultRoot = @"Default Root";
         NSArray<NSString *> *rootNames = [NSFileManager.defaultManager contentsOfDirectoryAtPath:RootsDir().path error:&error];
         NSAssert(error == nil, @"couldn't list roots: %@", error);
         self.roots = [rootNames mutableCopy];
-        if (!self.roots.count) {
-            // import default root
+        NSString *bundledRootName = BundledRootName();
+        if (!self.roots.count || (ShouldPreferBundledRoot() && ![self.roots containsObject:bundledRootName])) {
+            // Import the bundled root. x86_64 dev builds keep this separate
+            // from the normal "default" root to avoid stale i386 state.
             NSError *error;
             if (![self importRootFromArchive:[NSBundle.mainBundle URLForResource:@"root" withExtension:@"tar.gz"]
-                                        name:@"default"
+                                        name:bundledRootName
                                        error:&error
                             progressReporter:nil]) {
                 NSAssert(NO, @"failed to import default root, error %@", error);
@@ -60,7 +74,9 @@ static NSString *kDefaultRoot = @"Default Root";
         }];
         [self syncFileProviderDomains];
 
-        if ((!self.defaultRoot || ![self.roots containsObject:self.defaultRoot]) && self.roots.count)
+        if (ShouldPreferBundledRoot() && [self.roots containsObject:bundledRootName])
+            self.defaultRoot = bundledRootName;
+        else if ((!self.defaultRoot || ![self.roots containsObject:self.defaultRoot]) && self.roots.count)
             self.defaultRoot = self.roots.firstObject;
     }
     return self;

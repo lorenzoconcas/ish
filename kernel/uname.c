@@ -13,6 +13,7 @@ const char *uname_version = "SUPER AWESOME";
 const char *uname_hostname_override = NULL;
 
 void do_uname(struct uname *uts) {
+    const struct guest_abi *abi = current ? mm_guest_abi(current->mm) : guest_default_abi();
     struct utsname real_uname;
     uname(&real_uname);
     const char *hostname = real_uname.nodename;
@@ -24,7 +25,7 @@ void do_uname(struct uname *uts) {
     strcpy(uts->hostname, hostname);
     strcpy(uts->release, "4.20.69-ish");
     snprintf(uts->version, sizeof(uts->version), "%s %s %s", uname_version, __DATE__, __TIME__);
-    strcpy(uts->arch, "i686");
+    strcpy(uts->arch, abi->platform);
     strcpy(uts->domain, "(none)");
 }
 

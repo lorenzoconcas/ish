@@ -7,15 +7,21 @@
 #include "kernel/memory.h"
 #include "kernel/mm.h"
 
-struct mm *mm_new() {
+struct mm *mm_new_arch(enum guest_arch arch) {
     struct mm *mm = malloc(sizeof(struct mm));
     if (mm == NULL)
         return NULL;
+    mm->arch = arch;
     mem_init(&mm->mem);
+    mm->mem.mmu.guest_word_size = guest_abi_info(arch)->word_size;
     mm->start_brk = mm->brk = 0; // should get overwritten by exec
     mm->exefile = NULL;
     mm->refcount = 1;
     return mm;
+}
+
+struct mm *mm_new() {
+    return mm_new_arch(guest_default_abi()->arch);
 }
 
 struct mm *mm_copy(struct mm *mm) {
@@ -27,11 +33,21 @@ struct mm *mm_copy(struct mm *mm) {
     memset(&new_mm->mem.lock, 0, sizeof(new_mm->mem.lock));
     new_mm->refcount = 1;
     mem_init(&new_mm->mem);
+    new_mm->mem.mmu.guest_word_size = guest_abi_info(new_mm->arch)->word_size;
     fd_retain(new_mm->exefile);
     write_wrlock(&mm->mem.lock);
-    pt_copy_on_write(&mm->mem, &new_mm->mem, 0, MEM_PAGES);
+    int err = pt_copy_on_write(&mm->mem, &new_mm->mem, 0, MEM_PAGES);
     write_wrunlock(&mm->mem.lock);
+    if (err < 0) {
+        mm_release(new_mm);
+        return NULL;
+    }
     return new_mm;
+}
+
+page_t mm_find_hole(struct mm *mm, pages_t size) {
+    const struct guest_abi *abi = mm_guest_abi(mm);
+    return pt_find_hole_range(&mm->mem, abi->mmap_hole_low_page, abi->mmap_hole_high_page, size);
 }
 
 void mm_retain(struct mm *mm) {
@@ -61,7 +77,7 @@ static addr_t do_mmap(addr_t addr, dword_t len, dword_t prot, dword_t flags, fd_
         }
     }
     if (addr == 0) {
-        page = pt_find_hole(current->mem, pages);
+        page = mm_find_hole(current->mm, pages);
         if (page == BAD_PAGE)
             return _ENOMEM;
     }
@@ -104,6 +120,10 @@ static addr_t mmap_common(addr_t addr, dword_t len, dword_t prot, dword_t flags,
 
 addr_t sys_mmap2(addr_t addr, dword_t len, dword_t prot, dword_t flags, fd_t fd_no, dword_t offset) {
     return mmap_common(addr, len, prot, flags, fd_no, offset << PAGE_BITS);
+}
+
+addr_t sys_mmap64(addr_t addr, dword_t len, dword_t prot, dword_t flags, fd_t fd_no, dword_t offset) {
+    return mmap_common(addr, len, prot, flags, fd_no, offset);
 }
 
 struct mmap_arg_struct {

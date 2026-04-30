@@ -13,9 +13,14 @@
 #import "LinuxInterop.h"
 #endif
 
+#ifndef ISH_GUEST_ARCH_X86_64
+#define ISH_GUEST_ARCH_X86_64 0
+#endif
+
 int fs_ish_version;
 int fs_ish_apk_version;
 
+#if !ISH_GUEST_ARCH_X86_64
 #if !ISH_LINUX
 static ssize_t read_file(const char *path, char *buf, size_t size) {
     struct fd *fd = generic_open(path, O_RDONLY_, 0);
@@ -44,8 +49,10 @@ static int remove_directory(const char *path) {
 #define write_file linux_write_file
 #define remove_directory linux_remove_directory
 #endif
+#endif
 
 void FsInitialize(void) {
+#if !ISH_GUEST_ARCH_X86_64
     // /ish/version is the last ish version that opened this root. Used to migrate the filesystem.
     char buf[1000];
     ssize_t n = read_file("/ish/version", buf, sizeof(buf));
@@ -75,17 +82,27 @@ void FsInitialize(void) {
             write_file("/ish/version", currentVersionFile.UTF8String, [currentVersionFile lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
         }
     }
+#endif
 }
 
 bool FsIsManaged(void) {
+#if ISH_GUEST_ARCH_X86_64
+    return true;
+#else
     return fs_ish_version != 0;
+#endif
 }
 
 bool FsNeedsRepositoryUpdate(void) {
+#if ISH_GUEST_ARCH_X86_64
+    return false;
+#else
     return FsIsManaged() && fs_ish_apk_version < CURRENT_APK_VERSION;
+#endif
 }
 
 void FsUpdateOnlyRepositoriesFile(void) {
+#if !ISH_GUEST_ARCH_X86_64
     NSURL *repositories = [NSBundle.mainBundle URLForResource:@"repositories" withExtension:@"txt"];
     if (repositories != nil) {
         NSMutableData *repositoriesData = [@"# This file contains pinned repositories managed by iSH. If the /ish directory\n"
@@ -94,9 +111,11 @@ void FsUpdateOnlyRepositoriesFile(void) {
         [repositoriesData appendData:[NSData dataWithContentsOfURL:repositories]];
         write_file("/etc/apk/repositories", repositoriesData.bytes, repositoriesData.length);
     }
+#endif
 }
 
 void FsUpdateRepositories(void) {
+#if !ISH_GUEST_ARCH_X86_64
     FsUpdateOnlyRepositoriesFile();
     fs_ish_apk_version = CURRENT_APK_VERSION;
     NSString *currentVersionFile = [NSString stringWithFormat:@"%d\n", fs_ish_apk_version];
@@ -105,6 +124,7 @@ void FsUpdateRepositories(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         [NSNotificationCenter.defaultCenter postNotificationName:FsUpdatedNotification object:nil];
     });
+#endif
 }
 
 NSString *const FsUpdatedNotification = @"FsUpdatedNotification";

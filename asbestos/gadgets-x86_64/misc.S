@@ -69,7 +69,7 @@
         gret 1
 .endm
 
-.irp size, SIZE_LIST
+.irp size, SIZE_LIST,64
     ss \size, do_cmpxchg
 .endr
 .gadget_array cmpxchg

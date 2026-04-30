@@ -1,5 +1,6 @@
 #include "ptrace.h"
 #include "kernel/calls.h"
+#include "kernel/cpu.h"
 #include "kernel/errno.h"
 #include "kernel/signal.h"
 #include "task.h"
@@ -25,43 +26,43 @@ found:
 
 // Ensure stopped, ptrace locked, etc. before calling this
 static void get_user_regs(struct cpu_state *cpu, struct user_regs_struct_ *user_regs_) {
-    user_regs_->ebx = cpu->ebx;
-    user_regs_->ecx = cpu->ecx;
-    user_regs_->edx = cpu->edx;
-    user_regs_->esi = cpu->esi;
-    user_regs_->edi = cpu->edi;
-    user_regs_->ebp = cpu->ebp;
-    user_regs_->eax = cpu->eax;
+    user_regs_->ebx = cpu_compat_gpr(cpu, reg_ebx);
+    user_regs_->ecx = cpu_compat_gpr(cpu, reg_ecx);
+    user_regs_->edx = cpu_compat_gpr(cpu, reg_edx);
+    user_regs_->esi = cpu_compat_gpr(cpu, reg_esi);
+    user_regs_->edi = cpu_compat_gpr(cpu, reg_edi);
+    user_regs_->ebp = cpu_compat_gpr(cpu, reg_ebp);
+    user_regs_->eax = cpu_compat_gpr(cpu, reg_eax);
 //  user_regs_->xds = cpu->xds;
 //  user_regs_->xes = cpu->xes;
 //  user_regs_->xfs = cpu->xfs;
 //  user_regs_->xgs = cpu->xgs;
-    user_regs_->orig_eax = cpu->eax;
-    user_regs_->eip = cpu->eip;
+    user_regs_->orig_eax = cpu_compat_gpr(cpu, reg_eax);
+    user_regs_->eip = cpu_compat_ip(cpu);
 //  user_regs_->xcs = cpu->xcs;
     user_regs_->eflags = cpu->eflags;
-    user_regs_->esp = cpu->esp;
+    user_regs_->esp = cpu_compat_sp(cpu);
 //  user_regs_->xss = cpu->xss;
 }
 
 // Ensure stopped, ptrace locked, etc. before calling this
 static void set_user_regs(struct cpu_state *cpu, struct user_regs_struct_ *user_regs_) {
-    cpu->ebx = user_regs_->ebx;
-    cpu->ecx = user_regs_->ecx;
-    cpu->edx = user_regs_->edx;
-    cpu->esi = user_regs_->esi;
-    cpu->edi = user_regs_->edi;
-    cpu->ebp = user_regs_->ebp;
-    cpu->eax = user_regs_->eax;
+    cpu_set_compat_gpr(cpu, reg_ebx, user_regs_->ebx);
+    cpu_set_compat_gpr(cpu, reg_ecx, user_regs_->ecx);
+    cpu_set_compat_gpr(cpu, reg_edx, user_regs_->edx);
+    cpu_set_compat_gpr(cpu, reg_esi, user_regs_->esi);
+    cpu_set_compat_gpr(cpu, reg_edi, user_regs_->edi);
+    cpu_set_compat_gpr(cpu, reg_ebp, user_regs_->ebp);
+    cpu_set_compat_gpr(cpu, reg_eax, user_regs_->eax);
 //  cpu->xds = user_regs_->xds;
 //  cpu->xes = user_regs_->xes;
 //  cpu->xfs = user_regs_->xfs;
 //  cpu->xgs = user_regs_->xgs;
 //  cpu->eax = user_regs_->orig_eax;
-    cpu->eip = user_regs_->eip;
+    cpu_set_compat_ip(cpu, user_regs_->eip);
 //  cpu->xcs = user_regs_->xcs;
     cpu->eflags = user_regs_->eflags;
-    cpu->esp = user_regs_->esp;
+    cpu_set_compat_sp(cpu, user_regs_->esp);
 //  cpu->xss = user_regs_->xss;
 }
 

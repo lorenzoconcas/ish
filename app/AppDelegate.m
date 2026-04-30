@@ -29,6 +29,10 @@
 #include "fs/devices.h"
 #include "fs/path.h"
 
+#ifndef ISH_GUEST_ARCH_X86_64
+#define ISH_GUEST_ARCH_X86_64 0
+#endif
+
 #if ISH_LINUX
 #import "LinuxInterop.h"
 #endif
@@ -69,10 +73,21 @@ void ReportPanic(const char *message) {
 static int bootError;
 static NSString *const kSkipStartupMessage = @"Skip Startup Message";
 
+static void configureDefaultGuestArch(void) {
+#if ISH_GUEST_ARCH_X86_64
+    set_default_guest_arch(GUEST_ARCH_X86_64);
+    NSLog(@"iSH guest arch: x86_64");
+#else
+    set_default_guest_arch(GUEST_ARCH_X86_32);
+#endif
+}
+
 @implementation AppDelegate
 
 - (int)boot {
 #if !ISH_LINUX
+    configureDefaultGuestArch();
+
     NSURL *root = [Roots.instance rootUrl:Roots.instance.defaultRoot];
 
     int err = mount_root(&fakefs, [root URLByAppendingPathComponent:@"data"].fileSystemRepresentation);
@@ -223,6 +238,7 @@ void SyncHostname(void) {
 }
 
 + (void)maybePresentStartupMessageOnViewController:(UIViewController *)vc {
+#if !ISH_GUEST_ARCH_X86_64
     if ([NSUserDefaults.standardUserDefaults integerForKey:kSkipStartupMessage] >= 1)
         return;
     if (!FsIsManaged()) {
@@ -240,6 +256,7 @@ void SyncHostname(void) {
         [vc presentViewController:alert animated:YES completion:nil];
     }
     [NSUserDefaults.standardUserDefaults setInteger:1 forKey:kSkipStartupMessage];
+#endif
 }
 
 - (BOOL)application:(UIApplication *)application willFinishLaunchingWithOptions:(NSDictionary<UIApplicationLaunchOptionsKey,id> *)launchOptions {

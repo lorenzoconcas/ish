@@ -3,6 +3,9 @@
 .gadget load32_addr
     movl %_addr, %_tmp
     gret
+.gadget load64_addr
+    movq %_addrq, %tmp
+    gret
 
 .gadget load16_gs
     movw CPU_gs(%_cpu), %r10w
@@ -74,6 +77,22 @@
     xchg %\reg\()h, %\reg\()l
 .endm
 
+.macro do_high_reg_op op, size, name, offset
+    .gadget \op\size\()_reg_\name
+        movq \offset(%_cpu), %r14
+        .if \size == 32
+            do_op \op, \size, %r14d
+        .elseif \size == 16
+            do_op \op, \size, %r14w
+        .elseif \size == 8
+            do_op \op, \size, %r14b
+        .endif
+        .ifin(\op, store,xchg)
+            movq %r14, \offset(%_cpu)
+        .endifin
+        gret
+.endm
+
 .macro do_op_size op, size
     .ifnc \op,store
         .gadget \op\size\()_imm
@@ -124,6 +143,30 @@
             .endif
             gret
     .endr
+
+    .if \size == 8
+        .gadget \op\size\()_reg_spl
+            do_op \op, \size, %r8b
+            gret
+        .gadget \op\size\()_reg_bpl
+            do_op \op, \size, %bpl
+            gret
+        .gadget \op\size\()_reg_sil
+            do_op \op, \size, %sil
+            gret
+        .gadget \op\size\()_reg_dil
+            do_op \op, \size, %dil
+            gret
+    .endif
+
+    do_high_reg_op \op, \size, r8, CPU_r8
+    do_high_reg_op \op, \size, r9, CPU_r9
+    do_high_reg_op \op, \size, r10, CPU_r10
+    do_high_reg_op \op, \size, r11, CPU_r11
+    do_high_reg_op \op, \size, r12, CPU_r12
+    do_high_reg_op \op, \size, r13, CPU_r13
+    do_high_reg_op \op, \size, r14, CPU_r14
+    do_high_reg_op \op, \size, r15, CPU_r15
 .endm
 
 .irp op, load,store,xchg,add,sub,adc,sbb,and,or,xor
@@ -133,7 +176,7 @@
     .gadget_array \op
 .endr
 .irp op, imul,bsf,bsr
-    .irp size, 16,32
+    .irp size, 16,32,64
         do_op_size \op, \size
     .endr
     .gadget_array \op
@@ -207,7 +250,7 @@
 .endm
 
 .irp op, add,sub,adc,sbb,and,or,xor,inc,dec,xadd
-    .irp size, SIZE_LIST
+    .irp size, SIZE_LIST,64
         do_op_size_atomic \op, \size
     .endr
     .gadget_array atomic_\op
@@ -224,8 +267,12 @@
     .endm
 .endr
 .macro do_sign_extend size, s, ss
-    .if \size != 32
-        movs\ss\()l %tmp\s, %tmpd
+    .if \size == 8
+        movsbq %tmpb, %tmp
+    .elseif \size == 16
+        movswq %tmpw, %tmp
+    .elseif \size == 32
+        movslq %tmpd, %tmp
     .endif
 .endm
 .macro do_zero_extend size, s, ss
@@ -251,7 +298,16 @@
     not\ss %tmp\s
 .endm
 
-.irp op, inc,dec,sign_extend,zero_extend,div,idiv,mul,imul1,not
+.irp op, inc,dec,not
+    .irp size, 8,16,32,64
+        .gadget \op\()_\size
+            ss \size, do_\op
+            gret
+    .endr
+    .gadget_list \op, 8,16,32,64
+.endr
+
+.irp op, sign_extend,zero_extend
     .irp size, SIZE_LIST
         .gadget \op\()_\size
             ss \size, do_\op
@@ -260,13 +316,34 @@
     .gadget_list \op, SIZE_LIST
 .endr
 
+.irp op, div,idiv
+    .irp size, SIZE_LIST,64
+        .gadget \op\()_\size
+            ss \size, do_\op
+            gret
+    .endr
+    .gadget_list \op, SIZE_LIST,64
+.endr
+
+.irp op, mul,imul1
+    .irp size, SIZE_LIST,64
+        .gadget \op\()_\size
+            ss \size, do_\op
+            gret
+    .endr
+    .gadget_list \op, SIZE_LIST,64
+.endr
+
 .gadget cvt_16
     cwd
     gret
 .gadget cvt_32
     cdq
     gret
-.gadget_list cvt, SIZE_LIST
+.gadget cvt_64
+    cqo
+    gret
+.gadget_list cvt, 8,16,32,64
 
 .gadget cvte_16
     cbw
@@ -274,4 +351,7 @@
 .gadget cvte_32
     cwde
     gret
-.gadget_list cvte, SIZE_LIST
+.gadget cvte_64
+    cdqe
+    gret
+.gadget_list cvte, 8,16,32,64

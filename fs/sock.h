@@ -46,22 +46,24 @@ struct sockaddr *sockaddr_to_real(void *p);
 struct msghdr_ {
     addr_t msg_name;
     uint_t msg_namelen;
+    uint_t __pad1;
     addr_t msg_iov;
-    uint_t msg_iovlen;
+    qword_t msg_iovlen;
     addr_t msg_control;
-    uint_t msg_controllen;
+    qword_t msg_controllen;
     int_t msg_flags;
+    uint_t __pad2;
 };
 
 struct cmsghdr_ {
-    dword_t len;
+    qword_t len;
     int_t level;
     int_t type;
     uint8_t data[];
 };
 #define SCM_RIGHTS_ 1
 // copied and ported from musl
-#define CMSG_LEN_(cmsg) (((cmsg)->len + sizeof(dword_t) - 1) & ~(dword_t)(sizeof(dword_t) - 1))
+#define CMSG_LEN_(cmsg) (((cmsg)->len + sizeof(qword_t) - 1) & ~(qword_t)(sizeof(qword_t) - 1))
 #define CMSG_NEXT_(cmsg) ((uint8_t *)(cmsg) + CMSG_LEN_(cmsg))
 #define CMSG_NXTHDR_(cmsg, mhdr_end) ((cmsg)->len < sizeof (struct cmsghdr_) || \
         CMSG_LEN_(cmsg) + sizeof(struct cmsghdr_) >= (size_t) (mhdr_end - (uint8_t *)(cmsg)) \
@@ -193,6 +195,7 @@ static inline int sock_flags_from_real(int real) {
 #define IP_RECVTTL_ 12
 #define IP_RECVTOS_ 13
 #define TCP_NODELAY_ 1
+#define TCP_CORK_ 3
 #define TCP_DEFER_ACCEPT_ 9
 #define TCP_INFO_ 11
 #define TCP_CONGESTION_ 13
@@ -218,6 +221,7 @@ static inline int sock_opt_to_real(int fake, int level) {
         } break;
         case IPPROTO_TCP: switch (fake) {
             case TCP_NODELAY_: return TCP_NODELAY;
+            case TCP_CORK_: return 0; // Linux-only corking, safe to ignore.
             case TCP_DEFER_ACCEPT_: return 0; // unimplemented
 #if defined(__linux__)
             case TCP_INFO_: return TCP_INFO;

@@ -78,6 +78,27 @@ struct newstat64 {
     qword_t ino;
 } __attribute__((packed));
 
+struct stat_x86_64 {
+    qword_t dev;
+    qword_t ino;
+    qword_t nlink;
+    dword_t mode;
+    dword_t uid;
+    dword_t gid;
+    dword_t _pad0;
+    qword_t rdev;
+    sqword_t size;
+    sqword_t blksize;
+    sqword_t blocks;
+    sqword_t atime;
+    qword_t atime_nsec;
+    sqword_t mtime;
+    qword_t mtime_nsec;
+    sqword_t ctime;
+    qword_t ctime_nsec;
+    sqword_t _unused[3];
+} __attribute__((packed));
+
 struct statfsbuf {
     long type;
     long bsize;
@@ -121,6 +142,21 @@ struct statfs64_ {
     uint_t frsize;
     uint_t flags;
     uint_t pad[4];
+} __attribute__((packed));
+
+struct statfs_x86_64 {
+    sqword_t type;
+    sqword_t bsize;
+    qword_t blocks;
+    qword_t bfree;
+    qword_t bavail;
+    qword_t files;
+    qword_t ffree;
+    qword_t fsid;
+    sqword_t namelen;
+    sqword_t frsize;
+    sqword_t flags;
+    sqword_t spare[4];
 } __attribute__((packed));
 
 struct statx_timestamp_ {

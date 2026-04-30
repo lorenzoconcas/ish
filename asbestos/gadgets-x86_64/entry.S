@@ -43,6 +43,7 @@ fiber_ret:
 .global fiber_exit
 fiber_exit:
     save_regs
+    movq %_ip, CPU_rip(%_cpu)
     movl %_eip, CPU_eip(%_cpu)
     movq LOCAL_bp(%_cpu), %rsp
     add $0x8, %rsp # keep stack 16 byte aligned

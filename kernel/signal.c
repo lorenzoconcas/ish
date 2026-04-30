@@ -2,6 +2,7 @@
 #include <string.h>
 #include <signal.h>
 #include "kernel/calls.h"
+#include "kernel/cpu.h"
 #include "kernel/signal.h"
 #include "kernel/task.h"
 #include "kernel/vdso.h"
@@ -15,7 +16,7 @@ int xsave_extra = 0;
 int fxsave_extra = 0;
 static void sigmask_set(sigset_t_ set);
 static void altstack_to_user(struct sighand *sighand, struct stack_t_ *user_stack);
-static bool is_on_altstack(dword_t sp, struct sighand *sighand);
+static bool is_on_altstack(addr_t sp, struct sighand *sighand);
 
 static int signal_is_blockable(int sig) {
     return sig != SIGKILL_ && sig != SIGSTOP_;
@@ -156,15 +157,15 @@ static addr_t sigreturn_trampoline(const char *name) {
 }
 
 static void setup_sigcontext(struct sigcontext_ *sc, struct cpu_state *cpu) {
-    sc->ax = cpu->eax;
-    sc->bx = cpu->ebx;
-    sc->cx = cpu->ecx;
-    sc->dx = cpu->edx;
-    sc->di = cpu->edi;
-    sc->si = cpu->esi;
-    sc->bp = cpu->ebp;
-    sc->sp = sc->sp_at_signal = cpu->esp;
-    sc->ip = cpu->eip;
+    sc->ax = cpu_compat_gpr(cpu, reg_eax);
+    sc->bx = cpu_compat_gpr(cpu, reg_ebx);
+    sc->cx = cpu_compat_gpr(cpu, reg_ecx);
+    sc->dx = cpu_compat_gpr(cpu, reg_edx);
+    sc->di = cpu_compat_gpr(cpu, reg_edi);
+    sc->si = cpu_compat_gpr(cpu, reg_esi);
+    sc->bp = cpu_compat_gpr(cpu, reg_ebp);
+    sc->sp = sc->sp_at_signal = cpu_compat_sp(cpu);
+    sc->ip = cpu_compat_ip(cpu);
     collapse_flags(cpu);
     sc->flags = cpu->eflags;
     sc->trapno = cpu->trapno;
@@ -219,7 +220,8 @@ static void receive_signal(struct sighand *sighand, struct siginfo_ *info) {
     int sig = info->sig;
     STRACE("%d receiving signal %d\n", current->pid, sig);
 
-    switch (signal_action(sighand, sig)) {
+    int action_type = signal_action(sighand, sig);
+    switch (action_type) {
         case SIGNAL_IGNORE:
             return;
 
@@ -233,6 +235,14 @@ static void receive_signal(struct sighand *sighand, struct siginfo_ *info) {
         case SIGNAL_KILL:
             unlock(&sighand->lock); // do_exit must be called without this lock
             do_exit_group(sig);
+    }
+
+    if (task_cpu_abi(current)->arch == GUEST_ARCH_X86_64) {
+        // x86_64 rt_sigaction is available so userland can probe/install
+        // handlers, but signal frame delivery is still i386-shaped below.
+        // Until the long-mode frame/rt_sigreturn path exists, do not jump to
+        // a 64-bit userspace handler with a corrupt compat frame.
+        return;
     }
 
     struct sigaction_ *action = &sighand->action[info->sig];
@@ -253,10 +263,10 @@ static void receive_signal(struct sighand *sighand, struct siginfo_ *info) {
     }
 
     // set up registers for signal handler
-    current->cpu.eax = info->sig;
-    current->cpu.eip = sighand->action[info->sig].handler;
+    task_cpu_set_compat_reg(current, reg_eax, info->sig);
+    task_cpu_set_instruction_pointer(current, sighand->action[info->sig].handler);
 
-    dword_t sp = current->cpu.esp;
+    addr_t sp = task_cpu_stack_pointer(current);
     if (sighand->altstack && !is_on_altstack(sp, sighand)) {
         sp = sighand->altstack + sighand->altstack_size;
     }
@@ -271,7 +281,7 @@ static void receive_signal(struct sighand *sighand, struct siginfo_ *info) {
     sp -= frame_size;
     // align sp + 4 on a 16-byte boundary because that's what the abi says
     sp = ((sp + 4) & ~0xf) - 4;
-    current->cpu.esp = sp;
+    task_cpu_set_stack_pointer(current, sp);
 
     // Update the mask. By default the signal will be blocked while in the
     // handler, but sigaction is allowed to customize this.
@@ -283,8 +293,8 @@ static void receive_signal(struct sighand *sighand, struct siginfo_ *info) {
     if (need_siginfo) {
         frame.rt_sigframe.pinfo = sp + offsetof(struct rt_sigframe_, info);
         frame.rt_sigframe.puc = sp + offsetof(struct rt_sigframe_, uc);
-        current->cpu.edx = frame.rt_sigframe.pinfo;
-        current->cpu.ecx = frame.rt_sigframe.puc;
+        task_cpu_set_compat_reg(current, reg_edx, frame.rt_sigframe.pinfo);
+        task_cpu_set_compat_reg(current, reg_ecx, frame.rt_sigframe.puc);
     }
 
     // install frame
@@ -381,15 +391,15 @@ void receive_signals() {
 }
 
 static void restore_sigcontext(struct sigcontext_ *context, struct cpu_state *cpu) {
-    cpu->eax = context->ax;
-    cpu->ebx = context->bx;
-    cpu->ecx = context->cx;
-    cpu->edx = context->dx;
-    cpu->edi = context->di;
-    cpu->esi = context->si;
-    cpu->ebp = context->bp;
-    cpu->esp = context->sp;
-    cpu->eip = context->ip;
+    cpu_set_compat_gpr(cpu, reg_eax, context->ax);
+    cpu_set_compat_gpr(cpu, reg_ebx, context->bx);
+    cpu_set_compat_gpr(cpu, reg_ecx, context->cx);
+    cpu_set_compat_gpr(cpu, reg_edx, context->dx);
+    cpu_set_compat_gpr(cpu, reg_edi, context->di);
+    cpu_set_compat_gpr(cpu, reg_esi, context->si);
+    cpu_set_compat_gpr(cpu, reg_ebp, context->bp);
+    cpu_set_compat_sp(cpu, context->sp);
+    cpu_set_compat_ip(cpu, context->ip);
     collapse_flags(cpu);
 
     // Use AC, RF, OF, DF, TF, SF, ZF, AF, PF, CF
@@ -401,7 +411,7 @@ dword_t sys_rt_sigreturn() {
     struct cpu_state *cpu = &current->cpu;
     struct rt_sigframe_ frame;
     // esp points past the first field of the frame
-    if (user_get(cpu->esp - offsetof(struct rt_sigframe_, sig), frame)) {
+    if (user_get(cpu_compat_sp(cpu) - offsetof(struct rt_sigframe_, sig), frame)) {
         deliver_signal(current, SIGSEGV_, SIGINFO_NIL);
         return _EFAULT;
     }
@@ -409,21 +419,21 @@ dword_t sys_rt_sigreturn() {
 
     lock(&current->sighand->lock);
     // FIXME this duplicates logic from sys_sigaltstack
-    if (!is_on_altstack(cpu->esp, current->sighand) &&
+    if (!is_on_altstack(cpu_compat_sp(cpu), current->sighand) &&
             frame.uc.stack.size >= MINSIGSTKSZ_) {
         current->sighand->altstack = frame.uc.stack.stack;
         current->sighand->altstack_size = frame.uc.stack.size;
     }
     sigmask_set(frame.uc.sigmask);
     unlock(&current->sighand->lock);
-    return cpu->eax;
+    return cpu_compat_gpr(cpu, reg_eax);
 }
 
 dword_t sys_sigreturn() {
     struct cpu_state *cpu = &current->cpu;
     struct sigframe_ frame;
     // esp points past the first two fields of the frame
-    if (user_get(cpu->esp - offsetof(struct sigframe_, sc), frame)) {
+    if (user_get(cpu_compat_sp(cpu) - offsetof(struct sigframe_, sc), frame)) {
         deliver_signal(current, SIGSEGV_, SIGINFO_NIL);
         return _EFAULT;
     }
@@ -433,7 +443,7 @@ dword_t sys_sigreturn() {
     sigset_t_ oldmask = ((sigset_t_) frame.extramask << 32) | frame.sc.oldmask;
     sigmask_set(oldmask);
     unlock(&current->sighand->lock);
-    return cpu->eax;
+    return cpu_compat_gpr(cpu, reg_eax);
 }
 
 struct sighand *sighand_new() {
@@ -496,6 +506,51 @@ dword_t sys_rt_sigaction(dword_t signum, addr_t action_addr, addr_t oldaction_ad
     if (oldaction_addr != 0)
         if (user_put(oldaction_addr, oldaction))
             return _EFAULT;
+    return err;
+}
+
+struct sigaction_x86_64 {
+    addr_t handler;
+    qword_t flags;
+    addr_t restorer;
+    sigset_t_ mask;
+} __attribute__((packed));
+
+dword_t sys_rt_sigaction_x86_64(dword_t signum, addr_t action_addr, addr_t oldaction_addr, dword_t sigset_size) {
+    if (sigset_size != sizeof(sigset_t_))
+        return _EINVAL;
+
+    struct sigaction_ action = {}, oldaction;
+    if (action_addr != 0) {
+        struct sigaction_x86_64 user_action;
+        if (user_get(action_addr, user_action))
+            return _EFAULT;
+        action.handler = user_action.handler;
+        action.flags = user_action.flags;
+        action.restorer = user_action.restorer;
+        action.mask = user_action.mask;
+    }
+    STRACE("rt_sigaction_x86_64(%d, %#llx {handler=%#llx, flags=%#x, restorer=%#llx, mask=%#llx}, %#llx, %d)", signum,
+            (unsigned long long) action_addr, (unsigned long long) action.handler, action.flags,
+            (unsigned long long) action.restorer, (unsigned long long) action.mask,
+            (unsigned long long) oldaction_addr, sigset_size);
+
+    int err = do_sigaction(signum,
+            action_addr ? &action : NULL,
+            oldaction_addr ? &oldaction : NULL);
+    if (err < 0)
+        return err;
+
+    if (oldaction_addr != 0) {
+        struct sigaction_x86_64 user_oldaction = {
+            .handler = oldaction.handler,
+            .flags = oldaction.flags,
+            .restorer = oldaction.restorer,
+            .mask = oldaction.mask,
+        };
+        if (user_put(oldaction_addr, user_oldaction))
+            return _EFAULT;
+    }
     return err;
 }
 
@@ -568,7 +623,7 @@ int_t sys_rt_sigpending(addr_t set_addr) {
     return 0;
 }
 
-static bool is_on_altstack(dword_t sp, struct sighand *sighand) {
+static bool is_on_altstack(addr_t sp, struct sighand *sighand) {
     return sp > sighand->altstack && sp <= sighand->altstack + sighand->altstack_size;
 }
 
@@ -578,7 +633,7 @@ static void altstack_to_user(struct sighand *sighand, struct stack_t_ *user_stac
     user_stack->flags = 0;
     if (sighand->altstack == 0)
         user_stack->flags |= SS_DISABLE_;
-    if (is_on_altstack(current->cpu.esp, sighand))
+    if (is_on_altstack(task_cpu_stack_pointer(current), sighand))
         user_stack->flags |= SS_ONSTACK_;
 }
 
@@ -595,7 +650,7 @@ dword_t sys_sigaltstack(addr_t ss_addr, addr_t old_ss_addr) {
         }
     }
     if (ss_addr != 0) {
-        if (is_on_altstack(current->cpu.esp, sighand)) {
+        if (is_on_altstack(task_cpu_stack_pointer(current), sighand)) {
             unlock(&sighand->lock);
             return _EPERM;
         }

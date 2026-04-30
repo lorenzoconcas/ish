@@ -109,7 +109,7 @@ typedef int32_t sdword_t;
 typedef uint16_t word_t;
 typedef uint8_t byte_t;
 
-typedef dword_t addr_t;
+typedef qword_t addr_t;
 typedef dword_t uint_t;
 typedef sdword_t int_t;
 

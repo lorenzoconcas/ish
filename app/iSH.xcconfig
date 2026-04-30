@@ -1,7 +1,7 @@
 // Change this to change all the bundle IDs and app groups
-ROOT_BUNDLE_IDENTIFIER = app.ish.iSH
+ROOT_BUNDLE_IDENTIFIER = dev.lore.ish.x64local
 // It's easiest to specify your development team ID in the project build settings, but you can alternatively put it here to reduce merge conflicts
-DEVELOPMENT_TEAM =
+DEVELOPMENT_TEAM = ZY8KUHE8WR
 
 // Choose logging channels to enable. Separate by spaces. Try "verbose strace".
 ISH_LOG =
@@ -10,4 +10,11 @@ ISH_LOGGER_iphoneos = nslog
 ISH_LOGGER_iphonesimulator = nslog
 ISH_LOGGER_macosx = dprintf
 
+// Experimental: boot the app with the x86_64 guest ABI instead of i386.
+// Regenerate the matching smoke rootfs with tools/make-x86_64-devroot.sh.
+ISH_GUEST_ARCH_X86_64 = 1
+
+// Optional local rootfs tarball. When set, Xcode copies this file instead of
+// downloading ROOTFS_URL. This is useful for experimental x86_64 roots.
+ROOTFS_PATH = $(SRCROOT)/build/ish-x86_64-devroot.tar.gz
 ROOTFS_URL = github.com/ish-app/roots/releases/download/g00712ff0a54b2839c5aa1a8ed758003ca65357dc/appstore-apk.tar.gz

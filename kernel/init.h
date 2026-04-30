@@ -2,6 +2,7 @@
 #define KERNEL_INIT_H
 
 #include "fs/tty.h"
+#include "kernel/guest.h"
 
 // Incredibly sloppy. Please do not reference as an example of good API design.
 int mount_root(const struct fs_ops *fs, const char *source);

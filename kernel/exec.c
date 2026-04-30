@@ -11,6 +11,7 @@
 
 #include "misc.h"
 #include "kernel/calls.h"
+#include "kernel/cpu.h"
 #include "kernel/random.h"
 #include "kernel/errno.h"
 #include "fs/fd.h"
@@ -27,46 +28,184 @@ struct exec_args {
     const char *args;
 };
 
-static inline dword_t align_stack(dword_t sp);
-static inline ssize_t user_strlen(dword_t p);
+struct aux_value_ent {
+    uint32_t type;
+    addr_t value;
+};
+
+static inline addr_t align_stack(addr_t sp);
+static inline ssize_t user_strlen(addr_t p);
 static inline int user_memset(addr_t start, byte_t val, dword_t len);
-static inline dword_t copy_string(dword_t sp, const char *string);
-static inline dword_t args_copy(dword_t sp, struct exec_args args);
+static inline addr_t copy_string(addr_t sp, const char *string);
+static inline addr_t args_copy(addr_t sp, struct exec_args args);
+static inline int stack_put_word(addr_t addr, addr_t value, uint8_t word_size);
+static inline int stack_put_aux(addr_t addr, struct aux_value_ent aux, uint8_t word_size);
 static size_t args_size(struct exec_args args);
 
-static int read_header(struct fd *fd, struct elf_header *header) {
-    int err;
-    if (fd->ops->lseek(fd, 0, SEEK_SET))
-        return _EIO;
-    if ((err = fd->ops->read(fd, header, sizeof(*header))) != sizeof(*header)) {
+static int read_exact(struct fd *fd, void *buf, size_t size) {
+    ssize_t err = fd->ops->read(fd, buf, size);
+    if (err != (ssize_t) size) {
         if (err < 0)
             return _EIO;
         return _ENOEXEC;
     }
-    if (memcmp(&header->magic, ELF_MAGIC, sizeof(header->magic)) != 0
-            || (header->type != ELF_EXECUTABLE && header->type != ELF_DYNAMIC)
-            || header->bitness != ELF_32BIT
-            || header->endian != ELF_LITTLEENDIAN
-            || header->elfversion1 != 1
-            || header->machine != ELF_X86)
-        return _ENOEXEC;
     return 0;
 }
 
-static int read_prg_headers(struct fd *fd, struct elf_header header, struct prg_header **ph_out) {
-    ssize_t ph_size = sizeof(struct prg_header) * header.phent_count;
-    struct prg_header *ph = malloc(ph_size);
+static bool elf_value_fits_addr(qword_t value) {
+    return value <= UINT64_MAX;
+}
+
+static bool elf_range_fits_addr(qword_t start, qword_t size) {
+    qword_t end;
+    return !__builtin_add_overflow(start, size, &end);
+}
+
+static bool elf_value_fits_size(qword_t value) {
+    return value <= SIZE_MAX;
+}
+
+static bool elf_value_fits_offset(qword_t value) {
+    return value <= INT64_MAX;
+}
+
+static int read_header(struct fd *fd, const struct guest_abi *abi, struct elf_info *header) {
+    int err;
+    struct elf_ident ident;
+
+    if (fd->ops->lseek(fd, 0, SEEK_SET) < 0)
+        return _EIO;
+    if ((err = read_exact(fd, &ident, sizeof(ident))) < 0)
+        return err;
+    if (memcmp(&ident.magic, ELF_MAGIC, sizeof(ident.magic)) != 0
+            || ident.bitness != abi->elf_class
+            || ident.endian != ELF_LITTLEENDIAN
+            || ident.elfversion1 != 1)
+        return _ENOEXEC;
+
+    if (fd->ops->lseek(fd, 0, SEEK_SET) < 0)
+        return _EIO;
+    if (ident.bitness == ELF_32BIT) {
+        struct elf_header raw;
+        if ((err = read_exact(fd, &raw, sizeof(raw))) < 0)
+            return err;
+        if ((raw.type != ELF_EXECUTABLE && raw.type != ELF_DYNAMIC)
+                || raw.machine != abi->elf_machine
+                || raw.phent_size != sizeof(struct prg_header))
+            return _ENOEXEC;
+        *header = (struct elf_info) {
+            .bitness = raw.bitness,
+            .type = raw.type,
+            .machine = raw.machine,
+            .entry_point = raw.entry_point,
+            .prghead_off = raw.prghead_off,
+            .phent_size = raw.phent_size,
+            .phent_count = raw.phent_count,
+        };
+        return 0;
+    }
+    if (ident.bitness == ELF_64BIT) {
+        struct elf64_header raw;
+        if ((err = read_exact(fd, &raw, sizeof(raw))) < 0)
+            return err;
+        if ((raw.type != ELF_EXECUTABLE && raw.type != ELF_DYNAMIC)
+                || raw.machine != abi->elf_machine
+                || raw.phent_size != sizeof(struct prg64_header))
+            return _ENOEXEC;
+        *header = (struct elf_info) {
+            .bitness = raw.bitness,
+            .type = raw.type,
+            .machine = raw.machine,
+            .entry_point = raw.entry_point,
+            .prghead_off = raw.prghead_off,
+            .phent_size = raw.phent_size,
+            .phent_count = raw.phent_count,
+        };
+        return 0;
+    }
+    return _ENOEXEC;
+}
+
+static int read_prg_headers(struct fd *fd, struct elf_info header, struct elf_prg_info **ph_out) {
+    int err;
+
+    if (header.phent_count == 0) {
+        *ph_out = NULL;
+        return 0;
+    }
+    if (!elf_value_fits_offset(header.prghead_off))
+        return _ENOEXEC;
+
+    struct elf_prg_info *ph = calloc(header.phent_count, sizeof(struct elf_prg_info));
     if (ph == NULL)
         return _ENOMEM;
 
-    if (fd->ops->lseek(fd, header.prghead_off, SEEK_SET) < 0) {
+    if (fd->ops->lseek(fd, (off_t_) header.prghead_off, SEEK_SET) < 0) {
         free(ph);
         return _EIO;
     }
-    if (fd->ops->read(fd, ph, ph_size) != ph_size) {
+    if (header.bitness == ELF_32BIT) {
+        size_t raw_size;
+        if (__builtin_mul_overflow((size_t) header.phent_count, sizeof(struct prg_header), &raw_size)) {
+            free(ph);
+            return _ENOMEM;
+        }
+        struct prg_header *raw = malloc(raw_size);
+        if (raw == NULL) {
+            free(ph);
+            return _ENOMEM;
+        }
+        err = read_exact(fd, raw, raw_size);
+        if (err < 0) {
+            free(raw);
+            free(ph);
+            return err;
+        }
+        for (unsigned i = 0; i < header.phent_count; i++) {
+            ph[i] = (struct elf_prg_info) {
+                .type = raw[i].type,
+                .flags = raw[i].flags,
+                .offset = raw[i].offset,
+                .vaddr = raw[i].vaddr,
+                .paddr = raw[i].paddr,
+                .filesize = raw[i].filesize,
+                .memsize = raw[i].memsize,
+                .alignment = raw[i].alignment,
+            };
+        }
+        free(raw);
+    } else if (header.bitness == ELF_64BIT) {
+        size_t raw_size;
+        if (__builtin_mul_overflow((size_t) header.phent_count, sizeof(struct prg64_header), &raw_size)) {
+            free(ph);
+            return _ENOMEM;
+        }
+        struct prg64_header *raw = malloc(raw_size);
+        if (raw == NULL) {
+            free(ph);
+            return _ENOMEM;
+        }
+        err = read_exact(fd, raw, raw_size);
+        if (err < 0) {
+            free(raw);
+            free(ph);
+            return err;
+        }
+        for (unsigned i = 0; i < header.phent_count; i++) {
+            ph[i] = (struct elf_prg_info) {
+                .type = raw[i].type,
+                .flags = raw[i].flags,
+                .offset = raw[i].offset,
+                .vaddr = raw[i].vaddr,
+                .paddr = raw[i].paddr,
+                .filesize = raw[i].filesize,
+                .memsize = raw[i].memsize,
+                .alignment = raw[i].alignment,
+            };
+        }
+        free(raw);
+    } else {
         free(ph);
-        if (errno != 0)
-            return _EIO;
         return _ENOEXEC;
     }
 
@@ -74,11 +213,24 @@ static int read_prg_headers(struct fd *fd, struct elf_header header, struct prg_
     return 0;
 }
 
-static int load_entry(struct prg_header ph, addr_t bias, struct fd *fd) {
+static int load_entry(struct elf_prg_info ph, addr_t bias, struct fd *fd) {
     int err;
 
-    addr_t addr = ph.vaddr + bias;
-    addr_t offset = ph.offset;
+    if (ph.memsize < ph.filesize
+            || !elf_value_fits_addr(ph.vaddr)
+            || !elf_value_fits_addr(ph.filesize)
+            || !elf_value_fits_addr(ph.memsize)
+            || !elf_value_fits_offset(ph.offset))
+        return _ENOEXEC;
+
+    qword_t addr64;
+    if (__builtin_add_overflow((qword_t) bias, ph.vaddr, &addr64)
+            || !elf_range_fits_addr(addr64, ph.filesize)
+            || !elf_range_fits_addr(addr64, ph.memsize))
+        return _ENOEXEC;
+
+    addr_t addr = addr64;
+    off_t_ offset = ph.offset;
     addr_t memsize = ph.memsize;
     addr_t filesize = ph.filesize;
 
@@ -104,6 +256,8 @@ static int load_entry(struct prg_header ph, addr_t bias, struct fd *fd) {
         if (tail_size == PAGE_SIZE)
             // if you can calculate tail_size better and not have to do this please let me know
             tail_size = 0;
+        if (tail_size > bss_size)
+            tail_size = bss_size;
 
         if (tail_size != 0) {
             // Unlock and lock the mem because the user functions must be
@@ -112,8 +266,6 @@ static int load_entry(struct prg_header ph, addr_t bias, struct fd *fd) {
             user_memset(file_end, 0, tail_size);
             write_wrlock(&current->mem->lock);
         }
-        if (tail_size > bss_size)
-            tail_size = bss_size;
 
         // then map the pages from after the file mapping up to and including the end of bss
         if (bss_size - tail_size != 0)
@@ -124,40 +276,58 @@ static int load_entry(struct prg_header ph, addr_t bias, struct fd *fd) {
     return 0;
 }
 
-static addr_t find_hole_for_elf(struct elf_header *header, struct prg_header *ph) {
-    struct prg_header *first = NULL, *last = NULL;
-    for (int i = 0; i < header->phent_count; i++) {
-        if (ph[i].type == PT_LOAD) {
-            if (first == NULL)
-                first = &ph[i];
-            last = &ph[i];
-        }
+static int find_hole_for_elf(struct elf_info *header, struct elf_prg_info *ph, addr_t *hole_out) {
+    bool found = false;
+    qword_t low = 0;
+    qword_t high = 0;
+    for (unsigned i = 0; i < header->phent_count; i++) {
+        if (ph[i].type != PT_LOAD)
+            continue;
+        qword_t end;
+        if (__builtin_add_overflow(ph[i].vaddr, ph[i].memsize, &end))
+            return _ENOEXEC;
+        qword_t seg_low = PAGE(ph[i].vaddr);
+        qword_t seg_high = PAGE_ROUND_UP(end);
+        if (!found || seg_low < low)
+            low = seg_low;
+        if (!found || seg_high > high)
+            high = seg_high;
+        found = true;
     }
-    pages_t size = 0;
-    if (first != NULL) {
-        pages_t a = PAGE_ROUND_UP(last->vaddr + last->memsize);
-        pages_t b = PAGE(first->vaddr);
-        size = a - b;
+    if (!found) {
+        *hole_out = 0;
+        return 0;
     }
-    return pt_find_hole(current->mem, size) << PAGE_BITS;
+    if (high < low || high - low > MEM_PAGES)
+        return _ENOEXEC;
+
+    page_t hole = mm_find_hole(current->mm, high - low);
+    if (hole == BAD_PAGE)
+        return _ENOMEM;
+    if (!elf_value_fits_addr(hole << PAGE_BITS))
+        return _ENOMEM;
+    *hole_out = hole << PAGE_BITS;
+    return 0;
 }
 
 static int elf_exec(struct fd *fd, const char *file, struct exec_args argv, struct exec_args envp) {
     int err = 0;
+    enum guest_arch arch = current ? current->mm->arch : guest_default_abi()->arch;
+    const struct guest_abi *abi = guest_abi_info(arch);
 
     // read the headers
-    struct elf_header header;
-    if ((err = read_header(fd, &header)) < 0)
+    struct elf_info header;
+    if ((err = read_header(fd, abi, &header)) < 0)
         return err;
-    struct prg_header *ph;
+    struct elf_prg_info *ph;
     if ((err = read_prg_headers(fd, header, &ph)) < 0)
         return err;
 
     // look for an interpreter
     char *interp_name = NULL;
     struct fd *interp_fd = NULL;
-    struct elf_header interp_header;
-    struct prg_header *interp_ph = NULL;
+    struct elf_info interp_header;
+    struct elf_prg_info *interp_ph = NULL;
     for (unsigned i = 0; i < header.phent_count; i++) {
         if (ph[i].type != PT_INTERP)
             continue;
@@ -167,17 +337,27 @@ static int elf_exec(struct fd *fd, const char *file, struct exec_args argv, stru
             goto out_free_interp;
         }
 
-        interp_name = malloc(ph[i].filesize);
+        if (ph[i].filesize == 0 || !elf_value_fits_size(ph[i].filesize)
+                || !elf_value_fits_offset(ph[i].offset)) {
+            err = _ENOEXEC;
+            goto out_free_interp;
+        }
+
+        size_t interp_name_size = ph[i].filesize;
+        interp_name = malloc(interp_name_size);
         err = _ENOMEM;
         if (interp_name == NULL)
             goto out_free_ph;
 
         // read the interpreter name out of the file
-        err = _EIO;
-        if (fd->ops->lseek(fd, ph[i].offset, SEEK_SET) < 0)
+        if (fd->ops->lseek(fd, (off_t_) ph[i].offset, SEEK_SET) < 0)
             goto out_free_interp;
-        if (fd->ops->read(fd, interp_name, ph[i].filesize) != ph[i].filesize)
+        if ((err = read_exact(fd, interp_name, interp_name_size)) < 0)
             goto out_free_interp;
+        if (interp_name[interp_name_size - 1] != '\0') {
+            err = _ENOEXEC;
+            goto out_free_interp;
+        }
 
         // open interpreter and read headers
         interp_fd = generic_open(interp_name, O_RDONLY, 0);
@@ -185,7 +365,7 @@ static int elf_exec(struct fd *fd, const char *file, struct exec_args argv, stru
             err = PTR_ERR(interp_fd);
             goto out_free_interp;
         }
-        if ((err = read_header(interp_fd, &interp_header)) < 0) {
+        if ((err = read_header(interp_fd, abi, &interp_header)) < 0) {
             if (err == _ENOEXEC) err = _ELIBBAD;
             goto out_free_interp;
         }
@@ -194,6 +374,11 @@ static int elf_exec(struct fd *fd, const char *file, struct exec_args argv, stru
             goto out_free_interp;
         }
     }
+
+    // x86_64 dynamic startup is still experimental: there is no 64-bit VDSO
+    // yet, so auxv exposes no VDSO entry for this ABI. Let the interpreter run
+    // anyway so the remaining blockers surface as concrete missing syscalls or
+    // instructions instead of an unconditional exec-time rejection.
 
     // free the process's memory.
     // from this point on, if any error occurs the process will have to be
@@ -205,7 +390,8 @@ static int elf_exec(struct fd *fd, const char *file, struct exec_args argv, stru
     // released.
     lock(&current->general_lock);
     mm_release(current->mm);
-    task_set_mm(current, mm_new());
+    task_set_mm(current, mm_new_arch(arch));
+    current->mm->arch = abi->arch;
     unlock(&current->general_lock);
     write_wrlock(&current->mem->lock);
 
@@ -224,8 +410,8 @@ static int elf_exec(struct fd *fd, const char *file, struct exec_args argv, stru
             // see giant comment in linux/fs/binfmt_elf.c, around line 950
             if (interp_name)
                 bias = 0x56555000; // I have no idea how this number was arrived at
-            else
-                bias = find_hole_for_elf(&header, ph);
+            else if ((err = find_hole_for_elf(&header, ph, &bias)) < 0)
+                goto beyond_hope;
         }
 
         if ((err = load_entry(ph[i], bias, fd)) < 0)
@@ -233,66 +419,101 @@ static int elf_exec(struct fd *fd, const char *file, struct exec_args argv, stru
 
         // load_addr is used to get a value for AX_PHDR et al
         if (!load_addr_set) {
-            load_addr = bias + ph[i].vaddr - ph[i].offset;
+            qword_t load_addr64;
+            if (ph[i].offset > ph[i].vaddr
+                    || __builtin_add_overflow((qword_t) bias, ph[i].vaddr - ph[i].offset, &load_addr64)
+                    || !elf_value_fits_addr(load_addr64)) {
+                err = _ENOEXEC;
+                goto beyond_hope;
+            }
+            load_addr = load_addr64;
             load_addr_set = true;
         }
 
         // we have to know where the brk starts
-        addr_t brk = bias + ph[i].vaddr + ph[i].memsize;
+        qword_t brk64;
+        if (__builtin_add_overflow((qword_t) bias, ph[i].vaddr, &brk64)
+                || __builtin_add_overflow(brk64, ph[i].memsize, &brk64)
+                || !elf_value_fits_addr(brk64)) {
+            err = _ENOEXEC;
+            goto beyond_hope;
+        }
+        addr_t brk = brk64;
         if (brk > current->mm->start_brk)
             current->mm->start_brk = current->mm->brk = BYTES_ROUND_UP(brk);
     }
 
-    addr_t entry = bias + header.entry_point;
+    if (!load_addr_set) {
+        err = _ENOEXEC;
+        goto beyond_hope;
+    }
+
+    qword_t entry64;
+    if (__builtin_add_overflow((qword_t) bias, header.entry_point, &entry64)
+            || !elf_value_fits_addr(entry64)) {
+        err = _ENOEXEC;
+        goto beyond_hope;
+    }
+    addr_t program_entry = entry64;
+    addr_t entry = program_entry;
     addr_t interp_base = 0;
 
     if (interp_name) {
         // map dat shit! interpreter edition
-        interp_base = find_hole_for_elf(&interp_header, interp_ph);
-        for (int i = interp_header.phent_count - 1; i >= 0; i--) {
+        if ((err = find_hole_for_elf(&interp_header, interp_ph, &interp_base)) < 0)
+            goto beyond_hope;
+        for (int i = (int) interp_header.phent_count - 1; i >= 0; i--) {
             if (interp_ph[i].type != PT_LOAD)
                 continue;
             if ((err = load_entry(interp_ph[i], interp_base, interp_fd)) < 0)
                 goto beyond_hope;
         }
-        entry = interp_base + interp_header.entry_point;
+        if (__builtin_add_overflow((qword_t) interp_base, interp_header.entry_point, &entry64)
+                || !elf_value_fits_addr(entry64)) {
+            err = _ENOEXEC;
+            goto beyond_hope;
+        }
+        entry = entry64;
     }
 
-    // map vdso
-    err = _ENOMEM;
-    pages_t vdso_pages = sizeof(vdso_data) >> PAGE_BITS;
-    // FIXME disgusting hack: musl's dynamic linker has a one-page hole, and
-    // I'd rather not put the vdso in that hole. so find a two-page hole and
-    // add one.
-    page_t vdso_page = pt_find_hole(current->mem, vdso_pages + 1);
-    if (vdso_page == BAD_PAGE)
-        goto beyond_hope;
-    vdso_page += 1;
-    if ((err = pt_map(current->mem, vdso_page, vdso_pages, (void *) vdso_data, 0, 0)) < 0)
-        goto beyond_hope;
-    mem_pt(current->mem, vdso_page)->data->name = "[vdso]";
-    current->mm->vdso = vdso_page << PAGE_BITS;
-    addr_t vdso_entry = current->mm->vdso + ((struct elf_header *) vdso_data)->entry_point;
+    current->mm->vdso = 0;
+    addr_t vdso_entry = 0;
+    if (abi->word_size == sizeof(dword_t)) {
+        // map vdso
+        err = _ENOMEM;
+        pages_t vdso_pages = sizeof(vdso_data) >> PAGE_BITS;
+        // FIXME disgusting hack: musl's dynamic linker has a one-page hole, and
+        // I'd rather not put the vdso in that hole. so find a two-page hole and
+        // add one.
+        page_t vdso_page = mm_find_hole(current->mm, vdso_pages + 1);
+        if (vdso_page == BAD_PAGE)
+            goto beyond_hope;
+        vdso_page += 1;
+        if ((err = pt_map(current->mem, vdso_page, vdso_pages, (void *) vdso_data, 0, 0)) < 0)
+            goto beyond_hope;
+        mem_pt(current->mem, vdso_page)->data->name = "[vdso]";
+        current->mm->vdso = vdso_page << PAGE_BITS;
+        vdso_entry = current->mm->vdso + ((struct elf_header *) vdso_data)->entry_point;
 
-    // map 3 empty "vvar" pages to satisfy ptraceomatic
-    page_t vvar_page = pt_find_hole(current->mem, VVAR_PAGES);
-    if (vvar_page == BAD_PAGE)
-        goto beyond_hope;
-    if ((err = pt_map_nothing(current->mem, vvar_page, VVAR_PAGES, 0)) < 0)
-        goto beyond_hope;
-    mem_pt(current->mem, vvar_page)->data->name = "[vvar]";
+        // map 3 empty "vvar" pages to satisfy ptraceomatic
+        page_t vvar_page = mm_find_hole(current->mm, VVAR_PAGES);
+        if (vvar_page == BAD_PAGE)
+            goto beyond_hope;
+        if ((err = pt_map_nothing(current->mem, vvar_page, VVAR_PAGES, 0)) < 0)
+            goto beyond_hope;
+        mem_pt(current->mem, vvar_page)->data->name = "[vvar]";
+    }
 
     // STACK TIME!
 
-    // allocate 1 page of stack at 0xffffd, and let it grow down
-    if ((err = pt_map_nothing(current->mem, 0xffffd, 1, P_WRITE | P_GROWSDOWN)) < 0)
+    // allocate the initial stack page and let it grow down
+    if ((err = pt_map_nothing(current->mem, abi->stack_page, 1, P_WRITE | P_GROWSDOWN)) < 0)
         goto beyond_hope;
     // that was the last memory mapping
     write_wrunlock(&current->mem->lock);
-    dword_t sp = 0xffffe000;
-    // on 32-bit linux, there's 4 empty bytes at the very bottom of the stack.
-    // on 64-bit linux, there's 8. make ptraceomatic happy. (a major theme in this file)
-    sp -= sizeof(void *);
+    addr_t sp = abi->stack_top;
+    // Linux leaves a word-sized hole at the bottom of the initial stack.
+    sp -= abi->stack_spare_bytes;
 
     err = _EFAULT;
     // first, copy stuff pointed to by argv/envp/auxv
@@ -303,6 +524,8 @@ static int elf_exec(struct fd *fd, const char *file, struct exec_args argv, stru
     addr_t envp_addr = sp = args_copy(sp, envp);
     if (sp == 0)
         goto beyond_hope;
+    current->mm->env_start = envp_addr;
+    current->mm->env_end = file_addr;
     current->mm->argv_end = sp;
     addr_t argv_addr = sp = args_copy(sp, argv);
     if (sp == 0)
@@ -310,7 +533,7 @@ static int elf_exec(struct fd *fd, const char *file, struct exec_args argv, stru
     current->mm->argv_start = sp;
     sp = align_stack(sp);
 
-    addr_t platform_addr = sp = copy_string(sp, "i686");
+    addr_t platform_addr = sp = copy_string(sp, abi->platform);
     if (sp == 0)
         goto beyond_hope;
     // 16 random bytes so no system call is needed to seed a userspace RNG
@@ -325,18 +548,24 @@ static int elf_exec(struct fd *fd, const char *file, struct exec_args argv, stru
     // that from sp, then align, then copy argv/envp/auxv from that down
 
     // declare elf aux now so we can know how big it is
-    struct aux_ent aux[] = {
+    qword_t phdr64;
+    if (__builtin_add_overflow((qword_t) load_addr, header.prghead_off, &phdr64)
+            || !elf_value_fits_addr(phdr64)) {
+        err = _ENOEXEC;
+        goto beyond_hope;
+    }
+    struct aux_value_ent aux[] = {
         {AX_SYSINFO, vdso_entry},
         {AX_SYSINFO_EHDR, current->mm->vdso},
         {AX_HWCAP, 0x00000000}, // suck that
         {AX_PAGESZ, PAGE_SIZE},
         {AX_CLKTCK, 0x64},
-        {AX_PHDR, load_addr + header.prghead_off},
-        {AX_PHENT, sizeof(struct prg_header)},
+        {AX_PHDR, phdr64},
+        {AX_PHENT, header.phent_size},
         {AX_PHNUM, header.phent_count},
         {AX_BASE, interp_base},
         {AX_FLAGS, 0},
-        {AX_ENTRY, bias + header.entry_point},
+        {AX_ENTRY, program_entry},
         {AX_UID, 0},
         {AX_EUID, 0},
         {AX_GID, 0},
@@ -348,61 +577,64 @@ static int elf_exec(struct fd *fd, const char *file, struct exec_args argv, stru
         {AX_PLATFORM, platform_addr},
         {0, 0}
     };
-    sp -= ((argv.count + 1) + (envp.count + 1) + 1) * sizeof(dword_t);
-    sp -= sizeof(aux);
+    size_t aux_bytes;
+    if (__builtin_mul_overflow(array_size(aux), (size_t) abi->word_size * 2, &aux_bytes)) {
+        err = _ENOMEM;
+        goto beyond_hope;
+    }
+    sp -= ((argv.count + 1) + (envp.count + 1) + 1) * abi->word_size;
+    sp -= aux_bytes;
     sp &=~ 0xf;
 
     // now copy down, start using p so sp is preserved
     addr_t p = sp;
 
     // argc
-    if (user_put(p, argv.count))
+    if (stack_put_word(p, argv.count, abi->word_size))
         return _EFAULT;
-    p += sizeof(dword_t);
+    p += abi->word_size;
 
     // argv
     size_t argc = argv.count;
     while (argc-- > 0) {
-        if (user_put(p, argv_addr))
+        if (stack_put_word(p, argv_addr, abi->word_size))
             return _EFAULT;
         argv_addr += user_strlen(argv_addr) + 1;
-        p += sizeof(dword_t); // null terminator
+        p += abi->word_size;
     }
-    p += sizeof(dword_t); // null terminator
+    if (stack_put_word(p, 0, abi->word_size))
+        return _EFAULT;
+    p += abi->word_size;
 
     // envp
     size_t envc = envp.count;
     while (envc-- > 0) {
-        if (user_put(p, envp_addr))
+        if (stack_put_word(p, envp_addr, abi->word_size))
             return _EFAULT;
         envp_addr += user_strlen(envp_addr) + 1;
-        p += sizeof(dword_t);
+        p += abi->word_size;
     }
-    p += sizeof(dword_t); // null terminator
+    if (stack_put_word(p, 0, abi->word_size))
+        return _EFAULT;
+    p += abi->word_size;
 
     // copy auxv
     current->mm->auxv_start = p;
-    if (user_put(p, aux))
-        goto beyond_hope;
-    p += sizeof(aux);
+    for (size_t i = 0; i < array_size(aux); i++) {
+        if (stack_put_aux(p, aux[i], abi->word_size))
+            goto beyond_hope;
+        p += abi->word_size * 2;
+    }
     current->mm->auxv_end = p;
 
     current->mm->stack_start = sp;
-    current->cpu.esp = sp;
-    current->cpu.eip = entry;
+    task_cpu_reset_exec_state(current, sp, entry);
     current->cpu.fcw = 0x37f;
 
     // This code was written when I discovered that the glibc entry point
     // interprets edx as the address of a function to call on exit, as
     // specified in the ABI. This register is normally set by the dynamic
     // linker, so everything works fine until you run a static executable.
-    current->cpu.eax = 0;
-    current->cpu.ebx = 0;
-    current->cpu.ecx = 0;
-    current->cpu.edx = 0;
-    current->cpu.esi = 0;
-    current->cpu.edi = 0;
-    current->cpu.ebp = 0;
     collapse_flags(&current->cpu);
     current->cpu.eflags = 0;
 
@@ -435,23 +667,40 @@ static size_t args_size(struct exec_args args) {
     return args_end - args.args;
 }
 
-static inline dword_t align_stack(addr_t sp) {
+static inline addr_t align_stack(addr_t sp) {
     return sp &~ 0xf;
 }
 
-static inline dword_t copy_string(addr_t sp, const char *string) {
+static inline addr_t copy_string(addr_t sp, const char *string) {
     sp -= strlen(string) + 1;
     if (user_write_string(sp, string))
         return 0;
     return sp;
 }
 
-static inline dword_t args_copy(addr_t sp, struct exec_args args) {
+static inline addr_t args_copy(addr_t sp, struct exec_args args) {
     size_t size = args_size(args);
     sp -= size;
     if (user_write(sp, args.args, size))
         return 0;
     return sp;
+}
+
+static inline int stack_put_word(addr_t addr, addr_t value, uint8_t word_size) {
+    if (word_size == sizeof(dword_t)) {
+        if (value > UINT32_MAX)
+            return 1;
+        dword_t value32 = value;
+        return user_put(addr, value32);
+    }
+    qword_t value64 = value;
+    return user_put(addr, value64);
+}
+
+static inline int stack_put_aux(addr_t addr, struct aux_value_ent aux, uint8_t word_size) {
+    if (stack_put_word(addr, aux.type, word_size))
+        return 1;
+    return stack_put_word(addr + word_size, aux.value, word_size);
 }
 
 static inline ssize_t user_strlen(addr_t p) {

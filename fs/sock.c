@@ -18,6 +18,38 @@ const struct fd_ops socket_fdops;
 
 static lock_t peer_lock = LOCK_INITIALIZER;
 
+static void strace_dns_packet(const char *op, const void *packet, size_t len) {
+#if DEBUG_strace
+    const uint8_t *read_be16_bytes;
+#define READ_BE16(p) \
+    (read_be16_bytes = (const uint8_t *) (p), ((uint16_t) read_be16_bytes[0] << 8) | read_be16_bytes[1])
+    const uint8_t *dns = packet;
+    if (len < 12)
+        return;
+
+    uint16_t qdcount = READ_BE16(dns + 4);
+    uint16_t ancount = READ_BE16(dns + 6);
+    uint16_t qtype = 0;
+    size_t off = 12;
+    if (qdcount > 0) {
+        while (off < len && dns[off] != 0) {
+            if ((dns[off] & 0xc0) != 0)
+                break;
+            off += dns[off] + 1;
+        }
+        if (off + 5 <= len && dns[off] == 0)
+            qtype = READ_BE16(dns + off + 1);
+    }
+
+    uint16_t flags = READ_BE16(dns + 2);
+    STRACE(" dns %s id=%#x flags=%#x rcode=%u qd=%u an=%u qtype=%u len=%zu",
+            op, READ_BE16(dns), flags, flags & 0xf, qdcount, ancount, qtype, len);
+#undef READ_BE16
+#else
+    use(op, packet, len);
+#endif
+}
+
 static fd_t sock_fd_create(int sock_fd, int domain, int type, int protocol) {
     struct fd *fd = adhoc_fd_create(&socket_fdops);
     if (fd == NULL)
@@ -591,6 +623,8 @@ int_t sys_sendto(fd_t sock_fd, addr_t buffer_addr, dword_t len, dword_t flags, a
 
     ssize_t res = sendto(sock->real_fd, buffer, len, real_flags,
             sockaddr_addr ? (void *) &sockaddr : NULL, sockaddr_len);
+    if (res >= 12 && sock->socket.domain == AF_INET_ && sock->socket.type == SOCK_DGRAM_)
+        strace_dns_packet("sendto", buffer, res);
     free(buffer);
     if (res < 0)
         return errno_map();
@@ -624,7 +658,7 @@ int_t sys_recvfrom(fd_t sock_fd, addr_t buffer_addr, dword_t len, dword_t flags,
         return errno_map();
     }
 
-    if (user_write(buffer_addr, buffer, len)) {
+    if (user_write(buffer_addr, buffer, res)) {
         free(buffer);
         return _EFAULT;
     }
@@ -1019,6 +1053,8 @@ int_t sys_recvmsg(fd_t sock_fd, addr_t msghdr_addr, int_t flags) {
     }
 
     ssize_t res = recvmsg(sock->real_fd, &msg, real_flags);
+    if (res >= 12 && sock->socket.domain == AF_INET_ && sock->socket.type == SOCK_DGRAM_ && msg.msg_iovlen > 0)
+        strace_dns_packet("recvmsg", msg_iov[0].iov_base, res < (ssize_t) msg_iov[0].iov_len ? res : msg_iov[0].iov_len);
     int err = 0;
     if (res < 0)
         err = errno_map();
@@ -1143,6 +1179,7 @@ static void sock_translate_err(struct fd *fd, int *err) {
 static ssize_t sock_read(struct fd *fd, void *buf, size_t size) {
     int err = realfs_read(fd, buf, size);
     sock_translate_err(fd, &err);
+    STRACE(" socket_read(real=%d, size=%zu) -> %d", fd->real_fd, size, err);
     return err;
 }
 

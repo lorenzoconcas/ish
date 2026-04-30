@@ -5,14 +5,19 @@
 eax .req w20
 xax .req x20
 ebx .req w21
+xbx .req x21
 ecx .req w22
 xcx .req x22
 edx .req w23
 xdx .req x23
 esi .req w24
+xsi .req x24
 edi .req w25
+xdi .req x25
 ebp .req w26
+xbp .req x26
 esp .req w27
+xsp .req x27
 _ip .req x28
 eip .req w28
 _tmp .req w0
@@ -39,24 +44,29 @@ _xaddr .req x3
 .irp type, read,write
 
 .macro \type\()_prep size, id
-    and w8, _addr, 0xfff
+    and x8, _xaddr, 0xfff
     cmp x8, (0x1000-(\size/8))
     b.hi crosspage_load_\id
-    and w8, _addr, 0xfffff000
-    str w8, [_tlb, (-TLB_entries+TLB_dirty_page)]
+    lsr x8, _xaddr, 12
+    lsl x8, x8, 12
+    str x8, [_tlb, (-TLB_entries+TLB_dirty_page)]
     ubfx x9, _xaddr, 12, 10
     eor x9, x9, _xaddr, lsr 22
-    lsl x9, x9, 4
+    and x9, x9, 0x3ff
+    // struct tlb_entry is now 24 bytes (page, page_if_writable, data_minus_addr).
+    // Scale hashed index by 24 instead of the old 16-byte stride.
+    add x9, x9, x9, lsl 1
+    lsl x9, x9, 3
     add x9, x9, _tlb
     .ifc \type,read
-        ldr w10, [x9, TLB_ENTRY_page]
+        ldr x10, [x9, TLB_ENTRY_page]
     .else
-        ldr w10, [x9, TLB_ENTRY_page_if_writable]
+        ldr x10, [x9, TLB_ENTRY_page_if_writable]
     .endif
-    cmp w8, w10
+    cmp x8, x10
     b.ne handle_miss_\id
     ldr x10, [x9, TLB_ENTRY_data_minus_addr]
-    add _xaddr, x10, _xaddr, uxtx
+    add _xaddr, x10, _xaddr
 back_\id:
 .endm
 
@@ -103,6 +113,8 @@ back_write_done_\id :
             \macro \args, \size, h
         .elseif \size == 32
             \macro \args, \size,
+        .elseif \size == 64
+            \macro \args, \size, x
         .else
             .error "bad size"
         .endif
@@ -113,6 +125,8 @@ back_write_done_\id :
             \macro \size, h
         .elseif \size == 32
             \macro \size,
+        .elseif \size == 64
+            \macro \size, x
         .else
             .error "bad size"
         .endif
@@ -135,6 +149,13 @@ back_write_done_\id :
     orr w10, w10, AF_OPS
     str w10, [_cpu, CPU_flags_res]
 .endm
+.macro setf_a64 src, dst
+    str \src, [_cpu, CPU_op1]
+    str \dst, [_cpu, CPU_op2]
+    ldr w10, [_cpu, CPU_flags_res]
+    orr w10, w10, AF_OPS
+    str w10, [_cpu, CPU_flags_res]
+.endm
 .macro clearf_a
     ldr w10, [_cpu, CPU_eflags]
     ldr w11, [_cpu, CPU_flags_res]
@@ -148,10 +169,16 @@ back_write_done_\id :
     strb wzr, [_cpu, CPU_cf]
 .endm
 .macro setf_zsp s, val=_tmp
-    .ifnb \s
-        sxt\s \val, \val
-    .endif
-    str \val, [_cpu, CPU_res]
+    .ifc \s,b
+        sxtb x10, \val
+    .else N .ifc \s,h
+        sxth x10, \val
+    .else N .ifc \s,x
+        mov x10, \val
+    .else
+        sxtw x10, \val
+    .endif N .endif N .endif
+    str x10, [_cpu, CPU_res]
     ldr w10, [_cpu, CPU_flags_res]
     orr w10, w10, (ZF_RES|SF_RES|PF_RES)
     str w10, [_cpu, CPU_flags_res]
@@ -208,17 +235,25 @@ back_write_done_\id :
 .endm
 
 .macro load_regs
-    ldr eax, [_cpu, CPU_eax]
-    ldr ebx, [_cpu, CPU_ebx]
-    ldr ecx, [_cpu, CPU_ecx]
-    ldr edx, [_cpu, CPU_edx]
-    ldr esi, [_cpu, CPU_esi]
-    ldr edi, [_cpu, CPU_edi]
-    ldr ebp, [_cpu, CPU_ebp]
-    ldr esp, [_cpu, CPU_esp]
+    ldr xax, [_cpu, CPU_rax]
+    ldr xbx, [_cpu, CPU_rbx]
+    ldr xcx, [_cpu, CPU_rcx]
+    ldr xdx, [_cpu, CPU_rdx]
+    ldr xsi, [_cpu, CPU_rsi]
+    ldr xdi, [_cpu, CPU_rdi]
+    ldr xbp, [_cpu, CPU_rbp]
+    ldr xsp, [_cpu, CPU_rsp]
 .endm
 
 .macro save_regs
+    str xax, [_cpu, CPU_rax]
+    str xbx, [_cpu, CPU_rbx]
+    str xcx, [_cpu, CPU_rcx]
+    str xdx, [_cpu, CPU_rdx]
+    str xdi, [_cpu, CPU_rdi]
+    str xsi, [_cpu, CPU_rsi]
+    str xbp, [_cpu, CPU_rbp]
+    str xsp, [_cpu, CPU_rsp]
     str eax, [_cpu, CPU_eax]
     str ebx, [_cpu, CPU_ebx]
     str ecx, [_cpu, CPU_ecx]
@@ -227,6 +262,7 @@ back_write_done_\id :
     str esi, [_cpu, CPU_esi]
     str ebp, [_cpu, CPU_ebp]
     str esp, [_cpu, CPU_esp]
+    str _ip, [_cpu, CPU_rip]
     str eip, [_cpu, CPU_eip]
 .endm
 

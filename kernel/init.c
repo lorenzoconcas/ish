@@ -9,6 +9,16 @@
 #include "kernel/init.h"
 #include "kernel/personality.h"
 
+static enum guest_arch configured_guest_arch = GUEST_ARCH_X86_32;
+
+enum guest_arch default_guest_arch(void) {
+    return configured_guest_arch;
+}
+
+void set_default_guest_arch(enum guest_arch arch) {
+    configured_guest_arch = arch;
+}
+
 int mount_root(const struct fs_ops *fs, const char *source) {
     char source_realpath[MAX_PATH + 1];
     if (realpath(source, source_realpath) == NULL)
@@ -53,6 +63,7 @@ static struct rlimit_ init_rlimits[16] = {
 // TODO error propagation
 static struct task *construct_task(struct task *parent) {
     struct task *task = task_create_(parent);
+    enum guest_arch arch = parent && parent->mm ? parent->mm->arch : default_guest_arch();
 
     struct tgroup *group = malloc(sizeof(struct tgroup));
     *group = (struct tgroup) {};
@@ -68,7 +79,7 @@ static struct task *construct_task(struct task *parent) {
     task->tgid = task->pid;
     task_setsid(task);
 
-    task_set_mm(task, mm_new());
+    task_set_mm(task, mm_new_arch(arch));
     task->sighand = sighand_new();
     task->files = fdtable_new(3); // why is there a 3 here
 

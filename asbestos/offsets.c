@@ -21,8 +21,27 @@ void cpu() {
     OFFSET(CPU, cpu_state, bp);
     OFFSET(CPU, cpu_state, sp);
     OFFSET(CPU, cpu_state, eip);
+    OFFSET(CPU, cpu_state, rax);
+    OFFSET(CPU, cpu_state, rbx);
+    OFFSET(CPU, cpu_state, rcx);
+    OFFSET(CPU, cpu_state, rdx);
+    OFFSET(CPU, cpu_state, rsi);
+    OFFSET(CPU, cpu_state, rdi);
+    OFFSET(CPU, cpu_state, rbp);
+    OFFSET(CPU, cpu_state, rsp);
+    OFFSET(CPU, cpu_state, r8);
+    OFFSET(CPU, cpu_state, r9);
+    OFFSET(CPU, cpu_state, r10);
+    OFFSET(CPU, cpu_state, r11);
+    OFFSET(CPU, cpu_state, r12);
+    OFFSET(CPU, cpu_state, r13);
+    OFFSET(CPU, cpu_state, r14);
+    OFFSET(CPU, cpu_state, r15);
+    OFFSET(CPU, cpu_state, rip);
     OFFSET(CPU, cpu_state, gs);
     OFFSET(CPU, cpu_state, tls_ptr);
+    OFFSET(CPU, cpu_state, fsbase);
+    OFFSET(CPU, cpu_state, gsbase);
 
     OFFSET(CPU, cpu_state, eflags);
     OFFSET(CPU, cpu_state, of);

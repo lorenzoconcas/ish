@@ -30,6 +30,27 @@ struct newstat64 stat_convert_newstat64(struct statbuf stat) {
     return newstat;
 }
 
+static struct stat_x86_64 stat_convert_x86_64(struct statbuf stat) {
+    struct stat_x86_64 x64stat = {};
+    x64stat.dev = stat.dev;
+    x64stat.ino = stat.inode;
+    x64stat.nlink = stat.nlink;
+    x64stat.mode = stat.mode;
+    x64stat.uid = stat.uid;
+    x64stat.gid = stat.gid;
+    x64stat.rdev = stat.rdev;
+    x64stat.size = stat.size;
+    x64stat.blksize = stat.blksize;
+    x64stat.blocks = stat.blocks;
+    x64stat.atime = stat.atime;
+    x64stat.atime_nsec = stat.atime_nsec;
+    x64stat.mtime = stat.mtime;
+    x64stat.mtime_nsec = stat.mtime_nsec;
+    x64stat.ctime = stat.ctime;
+    x64stat.ctime_nsec = stat.ctime_nsec;
+    return x64stat;
+}
+
 int generic_statat(struct fd *at, const char *path_raw, struct statbuf *stat, bool follow_links) {
     char path[MAX_PATH];
     int err = path_normalize(at, path_raw, path, follow_links ? N_SYMLINK_FOLLOW : N_SYMLINK_NOFOLLOW);
@@ -94,8 +115,53 @@ dword_t sys_fstat64(fd_t fd_no, addr_t statbuf_addr) {
     return 0;
 }
 
-dword_t sys_statx(fd_t at_f, addr_t path_addr, int_t flags, uint_t mask, addr_t statx_addr) {
+static dword_t sys_stat_path_x86_64(fd_t at_f, addr_t path_addr, addr_t statbuf_addr, bool follow_links) {
     int err;
+    char path[MAX_PATH];
+    if (user_read_string(path_addr, path, sizeof(path)))
+        return _EFAULT;
+    STRACE("stat_x86_64(at=%d, path=\"%s\", statbuf=0x%llx, follow_links=%d)",
+            at_f, path, (unsigned long long) statbuf_addr, follow_links);
+    struct fd *at = at_fd(at_f);
+    if (at == NULL)
+        return _EBADF;
+    struct statbuf stat = {};
+    if ((err = generic_statat(at, path, &stat, follow_links)) < 0)
+        return err;
+    struct stat_x86_64 x64stat = stat_convert_x86_64(stat);
+    if (user_put(statbuf_addr, x64stat))
+        return _EFAULT;
+    return 0;
+}
+
+dword_t sys_stat_x86_64(addr_t path_addr, addr_t statbuf_addr) {
+    return sys_stat_path_x86_64(AT_FDCWD_, path_addr, statbuf_addr, true);
+}
+
+dword_t sys_lstat_x86_64(addr_t path_addr, addr_t statbuf_addr) {
+    return sys_stat_path_x86_64(AT_FDCWD_, path_addr, statbuf_addr, false);
+}
+
+dword_t sys_fstat_x86_64(fd_t fd_no, addr_t statbuf_addr) {
+    STRACE("fstat_x86_64(%d, 0x%llx)", fd_no, (unsigned long long) statbuf_addr);
+    struct fd *fd = f_get(fd_no);
+    if (fd == NULL)
+        return _EBADF;
+    struct statbuf stat = {};
+    int err = fd->mount->fs->fstat(fd, &stat);
+    if (err < 0)
+        return err;
+    struct stat_x86_64 x64stat = stat_convert_x86_64(stat);
+    if (user_put(statbuf_addr, x64stat))
+        return _EFAULT;
+    return 0;
+}
+
+dword_t sys_newfstatat_x86_64(fd_t at, addr_t path_addr, addr_t statbuf_addr, dword_t flags) {
+    return sys_stat_path_x86_64(at, path_addr, statbuf_addr, !(flags & AT_SYMLINK_NOFOLLOW_));
+}
+
+dword_t sys_statx(fd_t at_f, addr_t path_addr, int_t flags, uint_t mask, addr_t statx_addr) {
     char path[MAX_PATH];
     if (user_read_string(path_addr, path, sizeof(path)))
         return _EFAULT;

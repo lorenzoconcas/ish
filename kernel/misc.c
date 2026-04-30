@@ -1,8 +1,15 @@
 #include <string.h>
 #include "kernel/calls.h"
+#include "kernel/cpu.h"
+#include "kernel/guest.h"
 
 #define PRCTL_SET_KEEPCAPS_ 8
 #define PRCTL_SET_NAME_ 15
+
+#define ARCH_SET_GS_ 0x1001
+#define ARCH_SET_FS_ 0x1002
+#define ARCH_GET_FS_ 0x1003
+#define ARCH_GET_GS_ 0x1004
 
 int_t sys_prctl(dword_t option, uint_t arg2, uint_t UNUSED(arg3), uint_t UNUSED(arg4), uint_t UNUSED(arg5)) {
     switch (option) {
@@ -25,8 +32,32 @@ int_t sys_prctl(dword_t option, uint_t arg2, uint_t UNUSED(arg3), uint_t UNUSED(
 }
 
 int_t sys_arch_prctl(int_t code, addr_t addr) {
-    STRACE("arch_prctl(%#x, %#x)", code, addr);
-    return _EINVAL;
+    const struct guest_abi *abi = guest_abi_info(current->mm->arch);
+    STRACE("arch_prctl(%#x, %#llx)", code, (unsigned long long) addr);
+    if (!abi->has_arch_prctl)
+        return _EINVAL;
+    switch (code) {
+        case ARCH_SET_GS_:
+            task_cpu_set_gs_base(current, addr);
+            return 0;
+        case ARCH_SET_FS_:
+            task_cpu_set_fs_base(current, addr);
+            return 0;
+        case ARCH_GET_FS_: {
+            addr_t fsbase = task_cpu_fs_base(current);
+            if (user_put(addr, fsbase))
+                return _EFAULT;
+            return 0;
+        }
+        case ARCH_GET_GS_: {
+            addr_t gsbase = task_cpu_gs_base(current);
+            if (user_put(addr, gsbase))
+                return _EFAULT;
+            return 0;
+        }
+        default:
+            return _EINVAL;
+    }
 }
 
 #define REBOOT_MAGIC1 0xfee1dead

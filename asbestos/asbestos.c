@@ -178,6 +178,7 @@ static inline size_t fiber_cache_hash(addr_t ip) {
 static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
     struct asbestos *asbestos = cpu->mmu->asbestos;
     read_wrlock(&asbestos->jetsam_lock);
+    cpu_sync_long_to_compat(cpu);
 
     struct fiber_block **cache = calloc(FIBER_CACHE_SIZE, sizeof(*cache));
     struct fiber_frame *frame = malloc(sizeof(struct fiber_frame));
@@ -187,7 +188,7 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
 
     int interrupt = INT_NONE;
     while (interrupt == INT_NONE) {
-        addr_t ip = frame->cpu.eip;
+        addr_t ip = cpu_compat_ip(&frame->cpu);
         size_t cache_index = fiber_cache_hash(ip);
         struct fiber_block *block = cache[cache_index];
         if (block == NULL || block->addr != ip) {
@@ -234,6 +235,7 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
         if (interrupt == INT_NONE && ++frame->cpu.cycle % (1 << 10) == 0)
             interrupt = INT_TIMER;
         *cpu = frame->cpu;
+        cpu_sync_compat_to_long(cpu);
     }
 
     free(frame);
@@ -244,7 +246,8 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
 
 static int cpu_single_step(struct cpu_state *cpu, struct tlb *tlb) {
     struct gen_state state;
-    gen_start(cpu->eip, &state);
+    cpu_sync_long_to_compat(cpu);
+    gen_start(cpu_compat_ip(cpu), &state);
     gen_step(&state, tlb);
     gen_exit(&state);
     gen_end(&state);
@@ -253,6 +256,7 @@ static int cpu_single_step(struct cpu_state *cpu, struct tlb *tlb) {
     struct fiber_frame frame = {.cpu = *cpu};
     int interrupt = fiber_enter(block, &frame, tlb);
     *cpu = frame.cpu;
+    cpu_sync_compat_to_long(cpu);
     fiber_block_free(NULL, block);
     if (interrupt == INT_NONE)
         interrupt = INT_DEBUG;

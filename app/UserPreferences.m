@@ -8,6 +8,10 @@
 #import "UserPreferences.h"
 #import "fs/proc/ish.h"
 
+#ifndef ISH_GUEST_ARCH_X86_64
+#define ISH_GUEST_ARCH_X86_64 0
+#endif
+
 // IMPORTANT: If you add a constant here and expose it via UserPreferences,
 // consider if it also needs to be exposed as a friendly preference and included
 // in the KVO list below. (In most circumstances, the answer is "yes".)
@@ -179,6 +183,14 @@ bool (*remove_user_default)(const char *name);
                 kPreferenceFontFamilyKey: @"Menlo",
             }];
         }
+#if ISH_GUEST_ARCH_X86_64
+        NSArray<NSString *> *launchCommand = [_defaults stringArrayForKey:kPreferenceLaunchCommandKey];
+        if (launchCommand.count == 0 ||
+            [launchCommand isEqualToArray:@[@"/bin/sh"]] ||
+            [launchCommand isEqualToArray:@[@"/bin/ish-sh"]]) {
+            [_defaults setObject:@[@"/bin/login", @"-f", @"root"] forKey:kPreferenceLaunchCommandKey];
+        }
+#endif
         get_all_defaults_keys = get_all_defaults_keys_impl;
         get_friendly_name = get_friendly_name_impl;
         get_underlying_name = get_underlying_name_impl;

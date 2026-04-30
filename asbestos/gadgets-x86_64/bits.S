@@ -31,7 +31,7 @@
 .endm
 
 .irp type, shl,shr,sar,rol,ror,rcl,rcr
-    .irp size, 8,16,32
+    .irp size, 8,16,32,64
         ss \size, do_shift, \type
     .endr
     .gadget_array \type
@@ -104,10 +104,29 @@
     .endm
     .each_reg_size \size, x
     .purgem x
+
+    .macro y name offset
+        .gadget \op\size\()_reg_\name
+            movq \offset(%_cpu), %r14
+            do_bt_op \op, %r14\s, \size, \s, \ss
+            .ifin(\op, btc,bts,btr)
+                movq %r14, \offset(%_cpu)
+            .endifin
+            gret
+    .endm
+    y r8, CPU_r8
+    y r9, CPU_r9
+    y r10, CPU_r10
+    y r11, CPU_r11
+    y r12, CPU_r12
+    y r13, CPU_r13
+    y r14, CPU_r14
+    y r15, CPU_r15
+    .purgem y
 .endm
 
 .irp op, bt,btc,bts,btr
-    .irp size, 16,32
+    .irp size, 16,32,64
         ss \size, do_bt, \op
     .endr
     .gadget_array \op

@@ -17,6 +17,23 @@
     movq 32(%_ip), %_ip
     jmp fiber_ret_chain
 
+.gadget call64
+    // save return address
+    leaq -8(%_rsp), %_addrq
+    write_prep 64, call64
+    movq 16(%_ip), %r14
+    movq %r14, (%_addrq)
+    // push stack pointer
+    subq $8, %_rsp
+    // save ip-to-arguments to return cache
+    shrq $4, %r14
+    andq $0xfff, %r14
+    movq %_ip, LOCAL_ret_cache(%_cpu, %r14, 8)
+    write_done 64, call64 // clobbers r14
+    // jump to target
+    movq 32(%_ip), %_ip
+    jmp fiber_ret_chain
+
 .gadget call_indir
     // save return address
     leal -4(%_esp), %_addr
@@ -32,6 +49,23 @@
     write_done 32, call_indir // clobbers r14
     // jump to target
     movl %_tmp, %_eip
+    jmp fiber_ret
+
+.gadget call_indir64
+    // save return address
+    leaq -8(%_rsp), %_addrq
+    write_prep 64, call_indir64
+    movq 16(%_ip), %r14
+    movq %r14, (%_addrq)
+    // push stack pointer
+    subq $8, %_rsp
+    // save ip-to-arguments to return cache
+    shrq $4, %r14
+    andq $0xfff, %r14
+    movq %_ip, LOCAL_ret_cache(%_cpu, %r14, 8)
+    write_done 64, call_indir64 // clobbers r14
+    // jump to target
+    movq %tmp, %_ip
     jmp fiber_ret
 
 .gadget ret
@@ -68,6 +102,40 @@
     movl %tmpd, %_eip
     jmp fiber_ret
 
+.gadget ret64
+    movq %_rsp, %_addrq
+    // load return address and save to _tmp
+    read_prep 64, ret64
+    movq (%_addrq), %tmp
+    movq %tmp, %r14
+    // pop stack pointer
+    addq 8(%_ip), %_rsp
+    // load saved ip in return cache
+    shrq $4, %r14
+    andq $0xfff, %r14
+    movq LOCAL_ret_cache(%_cpu, %r14, 8), %_ip
+    // found?
+    cmpq $0, %_ip
+    jz 2f
+    // check if we jumped to the correct CALL instruction
+    movq 16(%_ip), %r14
+    movq 8(%_ip), %r15
+    cmpq %r14, %tmp
+    jnz 1f
+    // good, now do return chaining, the logic is similar to `fiber_ret_chain`
+    movq 24(%_ip), %_ip
+    btq $63, %_ip
+    jc 1f
+    leaq -FIBER_BLOCK_code(%_ip), %r15
+    movq %r15, LOCAL_last_block(%_cpu)
+    gret
+1:
+    movq %r15, LOCAL_last_block(%_cpu)
+    // fallthrough
+2:
+    movq %tmp, %_ip
+    jmp fiber_ret
+
 .gadget jmp_indir
     movl %_tmp, %_eip
     jmp fiber_ret
@@ -86,7 +154,7 @@
 #define COND_LIST o,c,z,cz,s,p,sxo,sxoz
 
 .macro check_res
-    cmpl DOLLAR(0), CPU_res(%_cpu)
+    cmpq DOLLAR(0), CPU_res(%_cpu)
 .endm
 .macro check_cf
     cmpb DOLLAR(0), CPU_cf(%_cpu)
@@ -192,12 +260,39 @@
     write_done 32, pushf
     gret
 
+.gadget pushf64
+    save_c
+    movq %_cpu, %rdi
+    call NAME(helper_collapse_flags)
+    restore_c
+
+    subq $8, %_rsp
+    movq %_rsp, %_addrq
+    write_prep 64, pushf64
+    movl CPU_eflags(%_cpu), %tmpd
+    movq %tmp, (%_addrq)
+    write_done 64, pushf64
+    gret
+
 .gadget popf
     movl %_esp, %_addr
     read_prep 32, popf
     movl (%_addrq), %tmpd
     movl %tmpd, CPU_eflags(%_cpu)
     add $4, %_esp
+
+    save_c
+    movq %_cpu, %rdi
+    call NAME(helper_expand_flags)
+    restore_c
+    gret
+
+.gadget popf64
+    movq %_rsp, %_addrq
+    read_prep 64, popf64
+    movq (%_addrq), %tmp
+    movl %tmpd, CPU_eflags(%_cpu)
+    addq $8, %_rsp
 
     save_c
     movq %_cpu, %rdi

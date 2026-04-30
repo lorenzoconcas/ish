@@ -319,6 +319,10 @@ dword_t sys_readv(fd_t fd_no, addr_t iovec_addr, dword_t iovec_count) {
     struct iovec_ *iovec = read_iovec(iovec_addr, iovec_count);
     if (IS_ERR(iovec))
         return PTR_ERR(iovec);
+    for (unsigned i = 0; i < iovec_count; i++)
+        STRACE(" iov[%u]={base=%#llx,len=%llu}", i,
+                (unsigned long long) iovec[i].base,
+                (unsigned long long) iovec[i].len);
     size_t io_size = iovec_size(iovec, iovec_count);
     char *buf = malloc(io_size);
     if (buf == NULL) {
@@ -330,16 +334,22 @@ dword_t sys_readv(fd_t fd_no, addr_t iovec_addr, dword_t iovec_count) {
         goto error;
 
     size_t offset = 0;
+    size_t remaining = res;
     for (unsigned i = 0; i < iovec_count; i++) {
-        size_t print_size = iovec[i].len;
-        if (print_size > 100) print_size = 100;
-        STRACE(" {\"%.*s\", %u}", print_size, buf + offset, iovec[i].len);
+        size_t chunk_size = iovec[i].len;
+        if (chunk_size > remaining)
+            chunk_size = remaining;
 
-        if (user_write(iovec[i].base, buf + offset, iovec[i].len)) {
+        size_t print_size = chunk_size;
+        if (print_size > 100) print_size = 100;
+        STRACE(" {\"%.*s\", %zu}", print_size, buf + offset, chunk_size);
+
+        if (chunk_size > 0 && user_write(iovec[i].base, buf + offset, chunk_size)) {
             res = _EFAULT;
             goto error;
         }
-        offset += iovec[i].len;
+        offset += chunk_size;
+        remaining -= chunk_size;
     }
 
 error:
@@ -370,7 +380,7 @@ dword_t sys_writev(fd_t fd_no, addr_t iovec_addr, dword_t iovec_count) {
 
         size_t print_size = iovec[i].len;
         if (print_size > 100) print_size = 100;
-        STRACE(" {\"%.*s\", %u}", print_size, buf + offset, iovec[i].len);
+        STRACE(" {\"%.*s\", %zu}", print_size, buf + offset, (size_t) iovec[i].len);
         offset += iovec[i].len;
     }
     res = sys_write_buf(fd_no, buf, io_size);
@@ -411,6 +421,19 @@ dword_t sys_lseek(fd_t f, dword_t off, dword_t whence) {
     unlock(&fd->lock);
     if ((dword_t) res != res)
         return _EOVERFLOW;
+    return res;
+}
+
+addr_t sys_lseek_x86_64(fd_t f, off_t_ off, dword_t whence) {
+    struct fd *fd = f_get(f);
+    if (fd == NULL)
+        return _EBADF;
+    if (!fd->ops->lseek)
+        return _ESPIPE;
+    lock(&fd->lock);
+    STRACE("lseek64(%d, %lld, %u)", f, (long long) off, whence);
+    off_t_ res = fd->ops->lseek(fd, off, whence);
+    unlock(&fd->lock);
     return res;
 }
 
@@ -681,6 +704,29 @@ static int_t statfs64_mount(struct mount *mount, addr_t buf_addr) {
     return 0;
 }
 
+static int_t statfs_x86_64_mount(struct mount *mount, addr_t buf_addr) {
+    struct statfsbuf buf = {};
+    int err = mount_statfs(mount, &buf);
+    if (err < 0)
+        return err;
+    struct statfs_x86_64 out_buf = {
+        .type = buf.type,
+        .bsize = buf.bsize,
+        .blocks = buf.blocks,
+        .bfree = buf.bfree,
+        .bavail = buf.bavail,
+        .files = buf.files,
+        .ffree = buf.ffree,
+        .fsid = buf.fsid,
+        .namelen = buf.namelen,
+        .frsize = buf.frsize,
+        .flags = buf.flags,
+    };
+    if (user_put(buf_addr, out_buf))
+        return _EFAULT;
+    return 0;
+}
+
 dword_t sys_statfs(addr_t path_addr, addr_t buf_addr) {
     char path_raw[MAX_PATH];
     if (user_read_string(path_addr, path_raw, sizeof(path_raw)))
@@ -713,12 +759,40 @@ dword_t sys_statfs64(addr_t path_addr, dword_t buf_size, addr_t buf_addr) {
     return err;
 }
 
+dword_t sys_statfs_x86_64(addr_t path_addr, addr_t buf_addr) {
+    char path_raw[MAX_PATH];
+    if (user_read_string(path_addr, path_raw, sizeof(path_raw)))
+        return _EFAULT;
+    STRACE("statfs_x86_64(\"%s\", %#x)", path_raw, buf_addr);
+    char path[MAX_PATH];
+    int err = path_normalize(AT_PWD, path_raw, path, N_SYMLINK_NOFOLLOW);
+    if (err < 0)
+        return err;
+    struct mount *mount = mount_find(path);
+    err = statfs_x86_64_mount(mount, buf_addr);
+    mount_release(mount);
+    return err;
+}
+
 dword_t sys_fstatfs(fd_t f, addr_t buf_addr) {
-    return statfs_mount(f_get(f)->mount, buf_addr);
+    struct fd *fd = f_get(f);
+    if (fd == NULL)
+        return _EBADF;
+    return statfs_mount(fd->mount, buf_addr);
 }
 
 dword_t sys_fstatfs64(fd_t f, addr_t buf_addr) {
-    return statfs64_mount(f_get(f)->mount, buf_addr);
+    struct fd *fd = f_get(f);
+    if (fd == NULL)
+        return _EBADF;
+    return statfs64_mount(fd->mount, buf_addr);
+}
+
+dword_t sys_fstatfs_x86_64(fd_t f, addr_t buf_addr) {
+    struct fd *fd = f_get(f);
+    if (fd == NULL)
+        return _EBADF;
+    return statfs_x86_64_mount(fd->mount, buf_addr);
 }
 
 dword_t sys_flock(fd_t f, dword_t operation) {

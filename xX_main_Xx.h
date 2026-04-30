@@ -50,7 +50,8 @@ static inline int xX_main_Xx(int argc, char *const argv[], const char *envp) {
     const char *workdir = NULL;
     const struct fs_ops *fs = &realfs;
     const char *console = "/dev/tty1";
-    while ((opt = getopt(argc, argv, "+r:f:d:c:")) != -1) {
+    enum guest_arch guest_arch = default_guest_arch();
+    while ((opt = getopt(argc, argv, "+r:f:d:c:a:")) != -1) {
         switch (opt) {
             case 'r':
             case 'f':
@@ -63,6 +64,12 @@ static inline int xX_main_Xx(int argc, char *const argv[], const char *envp) {
                 break;
             case 'c':
                 console = optarg;
+                break;
+            case 'a':
+                if (!guest_arch_parse(optarg, &guest_arch)) {
+                    fprintf(stderr, "unknown guest architecture: %s\n", optarg);
+                    exit(1);
+                }
                 break;
 
         }
@@ -81,6 +88,7 @@ static inline int xX_main_Xx(int argc, char *const argv[], const char *envp) {
     if (err < 0)
         return err;
 
+    set_default_guest_arch(guest_arch);
     become_first_process();
     current->thread = pthread_self();
     char cwd[MAX_PATH + 1];

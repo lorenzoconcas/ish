@@ -13,6 +13,7 @@ static int gen_step16(struct gen_state *state, struct tlb *tlb);
 int gen_step(struct gen_state *state, struct tlb *tlb) {
     state->orig_ip = state->ip;
     state->orig_ip_extra = 0;
+    state->long_mode = tlb->mmu->guest_word_size == 8;
     return gen_step32(state, tlb);
 }
 
@@ -80,9 +81,12 @@ void gen_exit(struct gen_state *state) {
 }
 
 #define DECLARE_LOCALS \
-    dword_t addr_offset = 0; \
+    addr_t addr_offset = 0; \
     bool end_block = false; \
-    bool seg_gs = false
+    bool seg_fs = false; \
+    bool seg_gs = false; \
+    bool addr32 = false; \
+    byte_t rex = 0
 
 #define FINISH \
     return !end_block
@@ -93,14 +97,23 @@ void gen_exit(struct gen_state *state) {
     if (!tlb_read(tlb, state->ip - size/8, &name, size/8)) SEGFAULT; \
 } while (0)
 
-#define READMODRM if (!modrm_decode32(&state->ip, tlb, &modrm)) SEGFAULT
-#define READADDR _READIMM(addr_offset, 32)
+#define READMODRM do { \
+    if (!modrm_decode32(&state->ip, tlb, &modrm, state->long_mode && addr32)) SEGFAULT; \
+    if (state->long_mode) modrm_apply_rex(&modrm, rex, state->ip); \
+} while (0)
+#define READADDR do { \
+    if (state->long_mode && !addr32) _READIMM(addr_offset, 64); \
+    else _READIMM(addr_offset, 32); \
+} while (0)
+#define SEG_FS() seg_fs = true
 #define SEG_GS() seg_gs = true
 
 // This should stay in sync with the definition of .gadget_array in gadgets.h
 enum arg {
     arg_reg_a, arg_reg_c, arg_reg_d, arg_reg_b, arg_reg_sp, arg_reg_bp, arg_reg_si, arg_reg_di,
+    arg_reg_r8, arg_reg_r9, arg_reg_r10, arg_reg_r11, arg_reg_r12, arg_reg_r13, arg_reg_r14, arg_reg_r15,
     arg_imm, arg_mem, arg_addr, arg_gs,
+    arg_reg_spl, arg_reg_bpl, arg_reg_sil, arg_reg_dil,
     arg_count, arg_invalid,
     // the following should not be synced with the list mentioned above (no gadgets implement them)
     arg_modrm_val, arg_modrm_reg,
@@ -110,9 +123,9 @@ enum arg {
 };
 
 enum size {
-    size_8, size_16, size_32,
+    size_8, size_16, size_32, size_64,
     size_count,
-    size_64, size_80, size_128, // bonus sizes
+    size_80, size_128, // bonus sizes
 };
 
 // sync with COND_LIST in control.S
@@ -153,39 +166,85 @@ static inline int sz(int size) {
         case 8: return size_8;
         case 16: return size_16;
         case 32: return size_32;
+        case 64: return size_64;
         default: return -1;
     }
 }
 
-bool gen_addr(struct gen_state *state, struct modrm *modrm, bool seg_gs) {
+bool gen_addr(struct gen_state *state, struct modrm *modrm, bool seg_fs, bool seg_gs) {
     if (modrm->base == reg_none)
         gg(addr_none, modrm->offset);
     else
         gag(addr, modrm->base, modrm->offset);
     if (modrm->type == modrm_mem_si)
         ga(si, modrm->index * 4 + modrm->shift);
+    if (seg_fs)
+        g(seg_fs);
     if (seg_gs)
         g(seg_gs);
     return true;
 }
-#define g_addr() gen_addr(state, &modrm, seg_gs)
+
+bool gen_addr64(struct gen_state *state, struct modrm *modrm, bool seg_fs, bool seg_gs) {
+    uint64_t offset = modrm->rip_relative
+        ? (uint64_t) (uint32_t) modrm->offset
+        : (uint64_t) (int64_t) modrm->offset;
+    if (modrm->base == reg_none)
+        gg(addr64_none, offset);
+    else
+        gag(addr64, modrm->base, offset);
+    if (modrm->type == modrm_mem_si)
+        ga(si64, modrm->index * 4 + modrm->shift);
+    if (seg_fs)
+        g(seg_fs64);
+    if (seg_gs)
+        g(seg_gs64);
+    return true;
+}
+#define g_addr() ((state->long_mode && !addr32) ? gen_addr64(state, &modrm, seg_fs, seg_gs) : gen_addr(state, &modrm, seg_fs, seg_gs))
 
 // this really wants to use all the locals of the decoder, which we can do
 // really nicely in gcc using nested functions, but that won't work in clang,
 // so we explicitly pass 500 arguments. sorry for the mess
-static inline bool gen_op(struct gen_state *state, gadget_t *gadgets, enum arg arg, struct modrm *modrm, uint64_t *imm, int size, bool seg_gs, dword_t addr_offset) {
+static inline enum arg rex_low8_arg(enum reg32 reg) {
+    switch (reg) {
+        case reg_esp: return arg_reg_spl;
+        case reg_ebp: return arg_reg_bpl;
+        case reg_esi: return arg_reg_sil;
+        case reg_edi: return arg_reg_dil;
+        default: return arg_invalid;
+    }
+}
+
+static inline bool gen_op(struct gen_state *state, gadget_t *gadgets, enum arg arg, struct modrm *modrm, uint64_t *imm, int size, bool seg_fs, bool seg_gs, bool addr32, dword_t addr_offset) {
+    int raw_size = size;
     size = sz(size);
     gadgets = gadgets + size * arg_count;
 
     switch (arg) {
         case arg_modrm_reg:
             // TODO find some way to assert that this won't overflow?
+            if (raw_size == 8 && modrm->rex_present) {
+                enum arg rex_arg = rex_low8_arg(modrm->reg);
+                if (rex_arg != arg_invalid) {
+                    arg = rex_arg;
+                    break;
+                }
+            }
             arg = modrm->reg + arg_reg_a; break;
         case arg_modrm_val:
-            if (modrm->type == modrm_reg)
+            if (modrm->type == modrm_reg) {
+                if (raw_size == 8 && modrm->rex_present) {
+                    enum arg rex_arg = rex_low8_arg(modrm->base);
+                    if (rex_arg != arg_invalid) {
+                        arg = rex_arg;
+                        break;
+                    }
+                }
                 arg = modrm->base + arg_reg_a;
-            else
+            } else {
                 arg = arg_mem;
+            }
             break;
         case arg_mem_addr:
             arg = arg_mem;
@@ -201,9 +260,20 @@ static inline bool gen_op(struct gen_state *state, gadget_t *gadgets, enum arg a
     if (arg >= arg_count || gadgets[arg] == NULL) {
         UNDEFINED;
     }
-    if (arg == arg_mem || arg == arg_addr) {
-        if (!gen_addr(state, modrm, seg_gs))
+    if (arg == arg_mem) {
+        if (state->long_mode && !addr32) {
+            if (!gen_addr64(state, modrm, seg_fs, seg_gs))
+                return false;
+        } else if (!gen_addr(state, modrm, seg_fs, seg_gs)) {
             return false;
+        }
+    } else if (arg == arg_addr) {
+        if (raw_size == 64 && state->long_mode && !addr32) {
+            if (!gen_addr64(state, modrm, seg_fs, seg_gs))
+                return false;
+        } else if (!gen_addr(state, modrm, seg_fs, seg_gs)) {
+            return false;
+        }
     }
     GEN(gadgets[arg]);
     if (arg == arg_imm)
@@ -214,7 +284,7 @@ static inline bool gen_op(struct gen_state *state, gadget_t *gadgets, enum arg a
 }
 #define op(type, thing, z) do { \
     extern gadget_t type##_gadgets[]; \
-    if (!gen_op(state, type##_gadgets, arg_##thing, &modrm, &imm, z, seg_gs, addr_offset)) return false; \
+    if (!gen_op(state, type##_gadgets, arg_##thing, &modrm, &imm, z, seg_fs, seg_gs, addr32, addr_offset)) return false; \
 } while (0)
 
 #define load(thing, z) op(load, thing, z)
@@ -242,10 +312,13 @@ static inline bool gen_op(struct gen_state *state, gadget_t *gadgets, enum arg a
 #define NEG(val,z) imm = 0; load(imm,z); op(sub, val,z); store(val,z)
 
 #define POP(thing,z) \
-    gg(pop, state->orig_ip); \
+    if ((z) == 64) gg(pop64, state->orig_ip); else gg(pop, state->orig_ip); \
     state->orig_ip_extra = 1ul << 62; /* marks that on segfault the stack pointer should be adjusted */\
     store(thing, z)
-#define PUSH(thing,z) load(thing, z); gg(push, state->orig_ip)
+#define PUSH(thing,z) do { \
+    load(thing, z); \
+    if ((z) == 64) gg(push64, state->orig_ip); else gg(push, state->orig_ip); \
+} while (0)
 
 #define INC(val,z) load(val, z); gz(inc, z); store(val, z)
 #define DEC(val,z) load(val, z); gz(dec, z); store(val, z)
@@ -269,7 +342,10 @@ static inline bool gen_op(struct gen_state *state, gadget_t *gadgets, enum arg a
 // fake_ip: the second one is the return target, patchable by return chaining.
 #define CALL(loc) do { \
     load(loc, OP_SIZE); \
-    ggggg(call_indir, state->orig_ip, -1, fake_ip, fake_ip); \
+    if (state->long_mode) \
+        ggggg(call_indir64, state->orig_ip, -1, fake_ip, fake_ip); \
+    else \
+        ggggg(call_indir, state->orig_ip, -1, fake_ip, fake_ip); \
     state->block_patch_ip = state->size - 3; \
     jump_ips(-1, 0); \
     end_block = true; \
@@ -277,12 +353,21 @@ static inline bool gen_op(struct gen_state *state, gadget_t *gadgets, enum arg a
 // the first four arguments are the same with CALL,
 // the last one is the call target, patchable by return chaining.
 #define CALL_REL(off) do { \
-    gggggg(call, state->orig_ip, -1, fake_ip, fake_ip, fake_ip + off); \
+    if (state->long_mode) \
+        gggggg(call64, state->orig_ip, -1, fake_ip, fake_ip, fake_ip + off); \
+    else \
+        gggggg(call, state->orig_ip, -1, fake_ip, fake_ip, fake_ip + off); \
     state->block_patch_ip = state->size - 4; \
     jump_ips(-2, -1); \
     end_block = true; \
 } while (0)
-#define RET_NEAR(imm) ggg(ret, state->orig_ip, 4 + imm); end_block = true
+#define RET_NEAR(imm) do { \
+    if (state->long_mode) \
+        ggg(ret64, state->orig_ip, 8 + imm); \
+    else \
+        ggg(ret, state->orig_ip, 4 + imm); \
+    end_block = true; \
+} while (0)
 #define INT(code) gggg(interrupt, (uint8_t) code, state->ip, 0); end_block = true
 
 #define SET(cc, dst) ga(set, cond_##cc); store(dst, 8)
@@ -301,8 +386,8 @@ static inline bool gen_op(struct gen_state *state, gadget_t *gadgets, enum arg a
     state->block->code[start - 1] = (state->size - start) * sizeof(long); \
 } while (0)
 
-#define PUSHF() g(pushf)
-#define POPF() g(popf)
+#define PUSHF() do { if (state->long_mode) g(pushf64); else g(pushf); } while (0)
+#define POPF() do { if (state->long_mode) g(popf64); else g(popf); } while (0)
 #define SAHF g(sahf)
 #define CLD g(cld)
 #define STD g(std)
@@ -344,9 +429,21 @@ static inline bool gen_op(struct gen_state *state, gadget_t *gadgets, enum arg a
 #define BSF(src, dst,z) los(bsf, src, dst, z)
 #define BSR(src, dst,z) los(bsr, src, dst, z)
 
-#define BSWAP(dst) ga(bswap, arg_##dst)
+#define BSWAP(dst,z) do { \
+    if ((z) == 64) ga(bswap64, arg_##dst); \
+    else ga(bswap, arg_##dst); \
+} while (0)
+#define BSWAP_REXB(low, high) do { \
+    if (REXB) BSWAP(high, oz); \
+    else BSWAP(low, oz); \
+} while (0)
 
-#define strop(op, rep, z) gag(op, sz(z) * size_count + rep_##rep, state->orig_ip)
+#define strop32(op, rep, z) gag(op, sz(z) * rep_count + rep_##rep, state->orig_ip)
+#define strop64(op, rep, z) gag(op##64addr, sz(z) * rep_count + rep_##rep, state->orig_ip)
+#define strop(op, rep, z) do { \
+    if (state->long_mode && !addr32) strop64(op, rep, z); \
+    else strop32(op, rep, z); \
+} while (0)
 #define STR(op, z) strop(op, once, z)
 #define REP(op, z) strop(op, rep, z)
 #define REPZ(op, z) strop(op, repz, z)
@@ -452,23 +549,37 @@ static inline bool could_be_memory(enum arg arg) {
     return arg == arg_modrm_val || arg == arg_mm_modrm_val || arg == arg_xmm_modrm_val;
 }
 
-static inline uint16_t cpu_reg_offset(enum arg arg, int index) {
-    if (arg == arg_xmm_modrm_reg || arg == arg_xmm_modrm_val)
+static inline uint16_t cpu_reg_offset(struct gen_state *state, enum arg arg, int index) {
+    if (arg == arg_xmm_modrm_reg || arg == arg_xmm_modrm_val) {
+        if (index < 0 || (size_t) index >= array_size(((struct cpu_state *) 0)->xmm))
+            return 0;
         return CPU_OFFSET(xmm[index]);
-    if (arg == arg_mm_modrm_reg || arg == arg_mm_modrm_val)
+    }
+    if (arg == arg_mm_modrm_reg || arg == arg_mm_modrm_val) {
+        if (index < 0 || (size_t) index >= array_size(((struct cpu_state *) 0)->mm))
+            return 0;
         return CPU_OFFSET(mm[index]);
-    if (arg == arg_modrm_reg || arg == arg_modrm_val)
+    }
+    if (arg == arg_modrm_reg || arg == arg_modrm_val) {
+        if (state->long_mode) {
+            if (index >= reg64_count)
+                return 0;
+            return CPU_OFFSET(regs64[index]);
+        }
+        if (index >= reg_count)
+            return 0;
         return CPU_OFFSET(regs[index]);
+    }
     return 0;
 }
 
-static inline bool gen_vec(enum arg src, enum arg dst, void (*helper)(), gadget_t read_mem_gadget, gadget_t write_mem_gadget, struct gen_state *state, struct modrm *modrm, uint8_t imm, bool seg_gs, bool has_imm) {
+static inline bool gen_vec(enum arg src, enum arg dst, void (*helper)(), gadget_t read_mem_gadget, gadget_t write_mem_gadget, struct gen_state *state, struct modrm *modrm, uint8_t imm, bool seg_fs, bool seg_gs, bool has_imm) {
     bool rm_is_src = !could_be_memory(dst);
     enum arg rm = rm_is_src ? src : dst;
     enum arg reg = rm_is_src ? dst : src;
 
-    uint16_t reg_offset = cpu_reg_offset(reg, modrm->opcode);
-    uint16_t rm_reg_offset = cpu_reg_offset(rm, modrm->rm_opcode);
+    uint16_t reg_offset = cpu_reg_offset(state, reg, modrm->opcode);
+    uint16_t rm_reg_offset = cpu_reg_offset(state, rm, modrm->rm_opcode);
     assert(reg_offset != 0);
 
     if (could_be_memory(rm) && modrm->type != modrm_reg)
@@ -498,7 +609,7 @@ static inline bool gen_vec(enum arg src, enum arg dst, void (*helper)(), gadget_
             break;
 
         case arg_mem:
-            gen_addr(state, modrm, seg_gs);
+            gen_addr(state, modrm, seg_fs, seg_gs);
             GEN(rm_is_src ? read_mem_gadget : write_mem_gadget);
             GEN(state->orig_ip);
             GEN(helper);
@@ -510,7 +621,7 @@ static inline bool gen_vec(enum arg src, enum arg dst, void (*helper)(), gadget_
             g(vec_helper_imm);
             GEN(helper);
             // This is rm_opcode instead of opcode because PSRLQ is weird like that
-            GEN(((uint16_t) imm) | (cpu_reg_offset(reg, modrm->rm_opcode) << 16));
+            GEN(((uint16_t) imm) | (cpu_reg_offset(state, reg, modrm->rm_opcode) << 16));
             break;
 
         default: die("unimplemented vecarg");
@@ -523,7 +634,7 @@ static inline bool gen_vec(enum arg src, enum arg dst, void (*helper)(), gadget_
 #define _v(src, dst, helper, _imm, z) do { \
     extern void gadget_vec_helper_read##z##_imm(void); \
     extern void gadget_vec_helper_write##z##_imm(void); \
-    if (!gen_vec(src, dst, (void (*)()) helper, gadget_vec_helper_read##z##_imm, gadget_vec_helper_write##z##_imm, state, &modrm, imm, seg_gs, has_imm_##_imm)) return false; \
+    if (!gen_vec(src, dst, (void (*)()) helper, gadget_vec_helper_read##z##_imm, gadget_vec_helper_write##z##_imm, state, &modrm, imm, seg_fs, seg_gs, has_imm_##_imm)) return false; \
 } while (0)
 #define v_(op, src, dst, _imm,z) _v(arg_##src, arg_##dst, vec_##op##z, _imm,z)
 #define v(op, src, dst,z) v_(op, src, dst,,z)

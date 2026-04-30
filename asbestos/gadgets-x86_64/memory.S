@@ -8,11 +8,24 @@
     write_done 32, push
     sub $4, %_esp
     gret 1
+.gadget push64
+    leaq -8(%_rsp), %_addrq
+    write_prep 64, push64
+    movq %tmp, (%_addrq)
+    write_done 64, push64
+    subq $8, %_rsp
+    gret 1
 .gadget pop
     movl %_esp, %_addr
     read_prep 32, pop
     movl (%_addrq), %_tmp
     add $4, %_esp
+    gret 1
+.gadget pop64
+    movq %_rsp, %_addrq
+    read_prep 64, pop64
+    movq (%_addrq), %tmp
+    addq $8, %_rsp
     gret 1
 
 .macro x name, reg
@@ -23,10 +36,60 @@
 .endm
 .each_reg x
 .purgem x
+.macro addr_high name, offset
+    .gadget addr_\name
+        movl \offset(%_cpu), %_addr
+        addl (%_ip), %_addr
+        gret 1
+.endm
+addr_high reg_r8, CPU_r8
+addr_high reg_r9, CPU_r9
+addr_high reg_r10, CPU_r10
+addr_high reg_r11, CPU_r11
+addr_high reg_r12, CPU_r12
+addr_high reg_r13, CPU_r13
+addr_high reg_r14, CPU_r14
+addr_high reg_r15, CPU_r15
+.purgem addr_high
 .gadget addr_none
     movl (%_ip), %_addr
     gret 1
 .gadget_list addr, REG_LIST
+
+.macro addr64_low name, reg
+    .gadget addr64_\name
+        movq (%_ip), %_addrq
+        addq %\reg, %_addrq
+        gret 1
+.endm
+addr64_low reg_a, rax
+addr64_low reg_c, rcx
+addr64_low reg_d, rdx
+addr64_low reg_b, rbx
+addr64_low reg_sp, _rsp
+addr64_low reg_bp, rbp
+addr64_low reg_si, rsi
+addr64_low reg_di, rdi
+.purgem addr64_low
+.macro addr64_high name, offset
+    .gadget addr64_\name
+        movq (%_ip), %_addrq
+        addq \offset(%_cpu), %_addrq
+        gret 1
+.endm
+addr64_high reg_r8, CPU_r8
+addr64_high reg_r9, CPU_r9
+addr64_high reg_r10, CPU_r10
+addr64_high reg_r11, CPU_r11
+addr64_high reg_r12, CPU_r12
+addr64_high reg_r13, CPU_r13
+addr64_high reg_r14, CPU_r14
+addr64_high reg_r15, CPU_r15
+.purgem addr64_high
+.gadget addr64_none
+    movq (%_ip), %_addrq
+    gret 1
+.gadget_list addr64, REG_LIST
 
 .macro x name, reg
     .irp times, 1,2,4,8
@@ -42,6 +105,24 @@
 .each_reg x
 .purgem x
 
+.macro si_high name, offset
+    .irp times, 1,2,4,8
+        .gadget si_\name\()_\times
+            movl \offset(%_cpu), %r14d
+            leal (%_addr,%r14d,\times), %_addr
+            gret
+    .endr
+.endm
+si_high reg_r8, CPU_r8
+si_high reg_r9, CPU_r9
+si_high reg_r10, CPU_r10
+si_high reg_r11, CPU_r11
+si_high reg_r12, CPU_r12
+si_high reg_r13, CPU_r13
+si_high reg_r14, CPU_r14
+si_high reg_r15, CPU_r15
+.purgem si_high
+
 .pushsection_rodata
 .global.name si_gadgets
 .irp reg, REG_LIST
@@ -51,8 +132,55 @@
 .endr
 .popsection
 
+.macro si64_low name, reg
+    .irp times, 1,2,4,8
+        .gadget si64_\name\()_\times
+            leaq (%_addrq,%\reg,\times), %_addrq
+            gret
+    .endr
+.endm
+si64_low reg_a, rax
+si64_low reg_c, rcx
+si64_low reg_d, rdx
+si64_low reg_b, rbx
+si64_low reg_sp, _rsp
+si64_low reg_bp, rbp
+si64_low reg_si, rsi
+si64_low reg_di, rdi
+.purgem si64_low
+
+.macro si64_high name, offset
+    .irp times, 1,2,4,8
+        .gadget si64_\name\()_\times
+            movq \offset(%_cpu), %r14
+            leaq (%_addrq,%r14,\times), %_addrq
+            gret
+    .endr
+.endm
+si64_high reg_r8, CPU_r8
+si64_high reg_r9, CPU_r9
+si64_high reg_r10, CPU_r10
+si64_high reg_r11, CPU_r11
+si64_high reg_r12, CPU_r12
+si64_high reg_r13, CPU_r13
+si64_high reg_r14, CPU_r14
+si64_high reg_r15, CPU_r15
+.purgem si64_high
+
+.pushsection_rodata
+.global.name si64_gadgets
+.irp reg, REG_LIST
+    .irp times, 1,2,4,8
+        .quad NAME(gadget_si64_\reg\()_\times)
+    .endr
+.endr
+.popsection
+
 .gadget seg_gs
-    addl CPU_tls_ptr(%_cpu), %_addr
+    addl CPU_gsbase(%_cpu), %_addr
+    gret
+.gadget seg_fs
+    addl CPU_fsbase(%_cpu), %_addr
     gret
 
 .irp type, read,write

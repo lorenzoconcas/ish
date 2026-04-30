@@ -102,6 +102,17 @@ NSArray<NSString *> *CurrentAppGroups(void) {
 }
 
 NSURL *ContainerURL(void) {
-    NSString *appGroup = CurrentAppGroups()[0];
-    return [NSFileManager.defaultManager containerURLForSecurityApplicationGroupIdentifier:appGroup];
+    NSString *appGroup = CurrentAppGroups().firstObject;
+    if (appGroup.length > 0) {
+        NSURL *container = [NSFileManager.defaultManager containerURLForSecurityApplicationGroupIdentifier:appGroup];
+        if (container != nil)
+            return container;
+        NSLog(@"iSH app group unavailable, falling back to app container: %@", appGroup);
+    } else {
+        NSLog(@"iSH app group entitlement missing, falling back to app container");
+    }
+
+    NSURL *support = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
+                                                          inDomains:NSUserDomainMask].firstObject;
+    return [support URLByAppendingPathComponent:@"iSH" isDirectory:YES];
 }
