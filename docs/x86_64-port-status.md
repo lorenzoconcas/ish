@@ -354,8 +354,7 @@ Implemented:
 - Downloaded and verified the official Alpine 3.23.3 x86_64 minirootfs for
   dynamic-linker testing.
 - Verified `/bin/busybox echo alpine` from that Alpine x86_64 rootfs: it
-  reaches musl, runs real busybox code, writes `alpine`, and exits with status
-  0.
+  reaches musl, runs real busybox code, writes `alpine`, and exits with status 0.
 - Verified `/bin/busybox sh -c 'echo alpine-shell'` from the same rootfs:
   dynamic shell startup runs far enough to execute the command and exit with
   status 0.
@@ -426,7 +425,7 @@ Practical note:
 - A separate extracted Alpine x86_64 minirootfs test also works from the CLI:
   `./build/ish -a x86_64 -r build/alpine-x86_64-rootfs /bin/busybox echo alpine`.
   Additional validated commands include `/bin/sh`, `uname -m`, `ls -l
-  /bin/sh`, `date -u -d @0`, and `date -d @1769548773`.
+/bin/sh`, `date -u -d @0`, and `date -d @1769548773`.
   This validates dynamic linking and basic real busybox shell startup, but it
   is not yet a full Alpine/OpenRC boot.
 
@@ -523,7 +522,7 @@ Still missing:
 - Keep legacy 8/16/32-bit register aliases working on top of the widened
   register file.
 - Fix all offset-sensitive host glue that depends on the current `struct
-  cpu_state` layout.
+cpu_state` layout.
 
 Key area:
 

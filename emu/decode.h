@@ -614,7 +614,10 @@ restart:
                 case 0x11: TRACEI("movups xmm, xmm:modrm");
                            READMODRM; VMOV(xmm_modrm_reg, xmm_modrm_val,128); break;
                 case 0x12: TRACEI("movlps xmm, modrm");
-                           READMODRM; V_OP(movl_p, modrm_val, xmm_modrm_reg,64); break;
+                           READMODRM;
+                           if (modrm.type == modrm_reg) { V_OP(movhl_p, xmm_modrm_val, xmm_modrm_reg,128); }
+                           else { V_OP(movl_p, modrm_val, xmm_modrm_reg,64); }
+                           break;
                 case 0x13: TRACEI("movlps modrm, xmm");
                            READMODRM; V_OP(movl_pm, xmm_modrm_reg, modrm_val,64); break;
                 case 0x14: TRACEI("unpcklps xmm, xmm:modrm");
@@ -622,7 +625,10 @@ restart:
                 case 0x15: TRACEI("unpckhps xmm, xmm:modrm");
                            READMODRM; V_OP(unpackh_ps, xmm_modrm_val, xmm_modrm_reg,128); break;
                 case 0x16: TRACEI("movhps xmm, modrm");
-                           READMODRM; V_OP(movh_p, modrm_val, xmm_modrm_reg,64); break;
+                           READMODRM;
+                           if (modrm.type == modrm_reg) { V_OP(movlh_p, xmm_modrm_val, xmm_modrm_reg,128); }
+                           else { V_OP(movh_p, modrm_val, xmm_modrm_reg,64); }
+                           break;
                 case 0x17: TRACEI("movhps modrm, xmm");
                            READMODRM; V_OP(movh_pm, xmm_modrm_reg, modrm_val,64); break;
                 case 0x2e: TRACEI("ucomiss xmm, xmm:modrm");
@@ -968,7 +974,9 @@ restart:
                    READMODRM; POP_STACK(modrm_val); break;
 
         case 0x90: TRACEI("nop/xchg r8, oax");
-                   if (REXB) XCHG(reg_r8, reg_a,oz); break;
+                   if (REXB) { XCHG(reg_r8, reg_a,oz); }
+                   else { g(nop); }
+                   break;
         case 0x91: TRACEI("xchg ocx/r9, oax");
                    XCHG_REXB(reg_c, reg_r9); break;
         case 0x92: TRACEI("xchg odx/r10, oax");

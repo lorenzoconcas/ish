@@ -1,5 +1,8 @@
 #include "gadgets.h"
 
+.gadget nop
+    gret
+
 .gadget cpuid
     # regrettable
     push %rsi

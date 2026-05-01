@@ -1,6 +1,9 @@
 #include "gadgets.h"
 #include "math.h"
 
+.gadget nop
+    gret
+
 .gadget cpuid
     # regrettable
     save_c

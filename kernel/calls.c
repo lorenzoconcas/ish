@@ -299,6 +299,7 @@ static syscall_t lookup_syscall_x86_64(addr_t syscall_num) {
         X64_SYSCALL(33, sys_dup2);
         X64_SYSCALL(35, sys_nanosleep_x86_64);
         X64_SYSCALL(39, sys_getpid);
+        X64_SYSCALL(40, sys_sendfile64);
         X64_SYSCALL(41, sys_socket);
         X64_SYSCALL(42, sys_connect);
         X64_SYSCALL(44, sys_sendto);
@@ -337,6 +338,8 @@ static syscall_t lookup_syscall_x86_64(addr_t syscall_num) {
         X64_SYSCALL(89, sys_readlink);
         X64_SYSCALL(90, sys_chmod);
         X64_SYSCALL(91, sys_fchmod);
+        X64_SYSCALL(92, sys_chown32);
+        X64_SYSCALL(93, sys_fchown32);
         X64_SYSCALL(94, sys_lchown);
         X64_SYSCALL(95, sys_umask);
         X64_SYSCALL(96, sys_gettimeofday_x86_64);
@@ -345,6 +348,8 @@ static syscall_t lookup_syscall_x86_64(addr_t syscall_num) {
         X64_SYSCALL(100, sys_times);
         X64_SYSCALL(102, sys_getuid);
         X64_SYSCALL(104, sys_getgid);
+        X64_SYSCALL(105, sys_setuid);
+        X64_SYSCALL(106, sys_setgid);
         X64_SYSCALL(107, sys_geteuid);
         X64_SYSCALL(108, sys_getegid);
         X64_SYSCALL(109, sys_setpgid);
@@ -424,6 +429,7 @@ static syscall_t lookup_syscall_x86_64(addr_t syscall_num) {
         X64_SYSCALL(307, sys_sendmmsg);
         X64_SYSCALL(316, sys_renameat2);
         X64_SYSCALL(318, sys_getrandom);
+        X64_SYSCALL(319, syscall_silent_stub);
         X64_SYSCALL(332, sys_statx);
         X64_SYSCALL(377, sys_copy_file_range);
         X64_SYSCALL(439, syscall_silent_stub);

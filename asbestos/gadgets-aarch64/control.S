@@ -146,6 +146,9 @@
 .gadget jmp_indir
     mov eip, _tmp
     b fiber_ret
+.gadget jmp_indir64
+    mov _ip, _xtmp
+    b fiber_ret
 .gadget jmp
     ldr _ip, [_ip]
     b fiber_ret_chain

@@ -94,7 +94,7 @@ Work already landed on this branch:
   exec time, a synthetic `PT_INTERP` handoff to a fake x86_64 interpreter has
   been verified, and a real Alpine 3.23.3 x86_64 minirootfs can run
   `/bin/busybox echo alpine`, `/bin/sh`, `/bin/busybox uname -m`, `ls -l
-  /bin/sh`, and `date -u -d @0` through musl and exit cleanly.
+/bin/sh`, and `date -u -d @0` through musl and exit cleanly.
 - App integration progress: the iOS app can now be built with
   `ISH_GUEST_ARCH_X86_64=1`, and Xcode can package a local experimental rootfs
   with upstream Alpine x86_64 repositories while skipping iSH's legacy i386 APK
@@ -297,7 +297,7 @@ Current progress:
 - Real Alpine x86_64 dynamic startup now reaches musl `__dls3`, hands off to
   busybox via a corrected auxv `AT_ENTRY`, and successfully runs
   `/bin/busybox echo alpine`, `/bin/sh`, `/bin/busybox uname -m`, `ls -l
-  /bin/sh`, and `date -u -d @0`.
+/bin/sh`, and `date -u -d @0`.
 - The app build can select x86_64 guest startup with `ISH_GUEST_ARCH_X86_64=1`
   and package a local rootfs tarball with `ROOTFS_PATH`.
 - The app dev root now packages Alpine x86_64 userspace for `/bin/sh`, while

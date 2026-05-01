@@ -568,6 +568,12 @@ void vec_movh_p64(NO_CPU, const uint64_t *src, union xmm_reg *dst) {
 void vec_movh_pm64(NO_CPU, const union xmm_reg *src, uint64_t *dst) {
     *dst = src->qw[1];
 }
+void vec_movhl_p128(NO_CPU, const union xmm_reg *src, union xmm_reg *dst) {
+    dst->qw[0] = src->qw[1];
+}
+void vec_movlh_p128(NO_CPU, const union xmm_reg *src, union xmm_reg *dst) {
+    dst->qw[1] = src->qw[0];
+}
 
 void vec_insert_w128(NO_CPU, const uint32_t *src, union xmm_reg *dst, uint8_t index) {
     dst->u16[index % 8] = (uint16_t)*src;

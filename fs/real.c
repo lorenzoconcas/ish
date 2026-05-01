@@ -307,7 +307,7 @@ int realfs_rename(struct mount *mount, const char *src, const char *dst) {
 }
 
 int realfs_symlink(struct mount *mount, const char *target, const char *link) {
-    int err = symlinkat(target, mount->root_fd, link);
+    int err = symlinkat(target, mount->root_fd, fix_path(link));
     if (err < 0)
         return errno_map();
     return err;

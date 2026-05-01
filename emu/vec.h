@@ -195,6 +195,8 @@ void vec_movl_p64(NO_CPU, const uint64_t *src, union xmm_reg *dst);
 void vec_movl_pm64(NO_CPU, const union xmm_reg *src, uint64_t *dst);
 void vec_movh_p64(NO_CPU, const uint64_t *src, union xmm_reg *dst);
 void vec_movh_pm64(NO_CPU, const union xmm_reg *src, uint64_t *dst);
+void vec_movhl_p128(NO_CPU, const union xmm_reg *src, union xmm_reg *dst);
+void vec_movlh_p128(NO_CPU, const union xmm_reg *src, union xmm_reg *dst);
 
 void vec_movmask_b64(NO_CPU, const union mm_reg *src, uint32_t *dst);
 void vec_movmask_b128(NO_CPU, const union xmm_reg *src, uint32_t *dst);

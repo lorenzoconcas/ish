@@ -139,6 +139,9 @@
 .gadget jmp_indir
     movl %_tmp, %_eip
     jmp fiber_ret
+.gadget jmp_indir64
+    movq %tmp, %_ip
+    jmp fiber_ret
 .gadget jmp
     movq (%_ip), %_ip
     jmp fiber_ret_chain

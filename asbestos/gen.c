@@ -329,7 +329,14 @@ static inline bool gen_op(struct gen_state *state, gadget_t *gadgets, enum arg a
     state->jump_ip[0] = state->size + off1; \
     if (off2 != 0) \
         state->jump_ip[1] = state->size + off2
-#define JMP(loc) load(loc, OP_SIZE); g(jmp_indir); end_block = true
+#define JMP(loc) do { \
+    load(loc, state->long_mode ? 64 : OP_SIZE); \
+    if (state->long_mode) \
+        g(jmp_indir64); \
+    else \
+        g(jmp_indir); \
+    end_block = true; \
+} while (0)
 #define JMP_REL(off) gg(jmp, fake_ip + off); jump_ips(-1, 0); end_block = true
 #define JCXZ_REL(off) ggg(jcxz, fake_ip + off, fake_ip); jump_ips(-2, -1); end_block = true
 #define jcc(cc, to, else) gagg(jmp, cond_##cc, to, else); jump_ips(-2, -1); end_block = true
@@ -341,7 +348,7 @@ static inline bool gen_op(struct gen_state *state, gadget_t *gadgets, enum arg a
 // fake_ip: the first one is the return address, used for saving to stack and verifying the cached ip in return cache is correct;
 // fake_ip: the second one is the return target, patchable by return chaining.
 #define CALL(loc) do { \
-    load(loc, OP_SIZE); \
+    load(loc, state->long_mode ? 64 : OP_SIZE); \
     if (state->long_mode) \
         ggggg(call_indir64, state->orig_ip, -1, fake_ip, fake_ip); \
     else \
@@ -573,7 +580,7 @@ static inline uint16_t cpu_reg_offset(struct gen_state *state, enum arg arg, int
     return 0;
 }
 
-static inline bool gen_vec(enum arg src, enum arg dst, void (*helper)(), gadget_t read_mem_gadget, gadget_t write_mem_gadget, struct gen_state *state, struct modrm *modrm, uint8_t imm, bool seg_fs, bool seg_gs, bool has_imm) {
+static inline bool gen_vec(enum arg src, enum arg dst, void (*helper)(), gadget_t read_mem_gadget, gadget_t write_mem_gadget, struct gen_state *state, struct modrm *modrm, uint8_t imm, bool seg_fs, bool seg_gs, bool addr32, bool has_imm) {
     bool rm_is_src = !could_be_memory(dst);
     enum arg rm = rm_is_src ? src : dst;
     enum arg reg = rm_is_src ? dst : src;
@@ -609,7 +616,10 @@ static inline bool gen_vec(enum arg src, enum arg dst, void (*helper)(), gadget_
             break;
 
         case arg_mem:
-            gen_addr(state, modrm, seg_fs, seg_gs);
+            if (state->long_mode && !addr32)
+                gen_addr64(state, modrm, seg_fs, seg_gs);
+            else
+                gen_addr(state, modrm, seg_fs, seg_gs);
             GEN(rm_is_src ? read_mem_gadget : write_mem_gadget);
             GEN(state->orig_ip);
             GEN(helper);
@@ -634,7 +644,7 @@ static inline bool gen_vec(enum arg src, enum arg dst, void (*helper)(), gadget_
 #define _v(src, dst, helper, _imm, z) do { \
     extern void gadget_vec_helper_read##z##_imm(void); \
     extern void gadget_vec_helper_write##z##_imm(void); \
-    if (!gen_vec(src, dst, (void (*)()) helper, gadget_vec_helper_read##z##_imm, gadget_vec_helper_write##z##_imm, state, &modrm, imm, seg_fs, seg_gs, has_imm_##_imm)) return false; \
+    if (!gen_vec(src, dst, (void (*)()) helper, gadget_vec_helper_read##z##_imm, gadget_vec_helper_write##z##_imm, state, &modrm, imm, seg_fs, seg_gs, addr32, has_imm_##_imm)) return false; \
 } while (0)
 #define v_(op, src, dst, _imm,z) _v(arg_##src, arg_##dst, vec_##op##z, _imm,z)
 #define v(op, src, dst,z) v_(op, src, dst,,z)
