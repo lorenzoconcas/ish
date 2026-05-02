@@ -421,6 +421,7 @@ void *mem_ptr(struct mem *mem, addr_t addr, int type) {
 
     page_t page = PAGE(addr);
     struct pt_entry *entry = mem_pt(mem, page);
+    bool dropped_lock = false;
 
     if (entry == NULL) {
         // page does not exist
@@ -442,6 +443,7 @@ void *mem_ptr(struct mem *mem, addr_t addr, int type) {
         pt_map_nothing(mem, page, 1, P_WRITE | P_GROWSDOWN);
         write_wrunlock(&mem->lock);
         read_wrlock(&mem->lock);
+        dropped_lock = true;
 
         entry = mem_pt(mem, page);
     }
@@ -469,11 +471,12 @@ void *mem_ptr(struct mem *mem, addr_t addr, int type) {
             pt_map(mem, page, 1, copy, 0, entry->flags &~ P_COW);
             write_wrunlock(&mem->lock);
             read_wrlock(&mem->lock);
+            dropped_lock = true;
         }
     }
 
     void *ptr = mem_ptr_nofault(mem, addr, type);
-    assert(old_ptr == NULL || old_ptr == ptr || type == MEM_WRITE_PTRACE);
+    assert(old_ptr == NULL || old_ptr == ptr || dropped_lock || type == MEM_WRITE_PTRACE);
     return ptr;
 }
 

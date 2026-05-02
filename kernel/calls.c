@@ -295,13 +295,16 @@ static syscall_t lookup_syscall_x86_64(addr_t syscall_num) {
         X64_SYSCALL(22, sys_pipe);
         X64_SYSCALL(24, sys_sched_yield);
         X64_SYSCALL(25, sys_mremap);
+        X64_SYSCALL(28, sys_madvise);
         X64_SYSCALL(32, sys_dup);
         X64_SYSCALL(33, sys_dup2);
         X64_SYSCALL(35, sys_nanosleep_x86_64);
+        X64_SYSCALL(38, sys_setitimer);
         X64_SYSCALL(39, sys_getpid);
         X64_SYSCALL(40, sys_sendfile64);
         X64_SYSCALL(41, sys_socket);
         X64_SYSCALL(42, sys_connect);
+        X64_SYSCALL(43, sys_accept);
         X64_SYSCALL(44, sys_sendto);
         X64_SYSCALL(45, sys_recvfrom);
         X64_SYSCALL(46, sys_sendmsg);
@@ -368,6 +371,7 @@ static syscall_t lookup_syscall_x86_64(addr_t syscall_num) {
         X64_SYSCALL(124, sys_getsid);
         X64_SYSCALL(125, sys_capget);
         X64_SYSCALL(126, sys_capset);
+        X64_SYSCALL(130, sys_rt_sigsuspend);
         X64_SYSCALL(135, sys_personality);
         X64_SYSCALL(137, sys_statfs_x86_64);
         X64_SYSCALL(138, sys_fstatfs_x86_64);
@@ -421,6 +425,7 @@ static syscall_t lookup_syscall_x86_64(addr_t syscall_num) {
         X64_SYSCALL(280, sys_utimensat);
         X64_SYSCALL(281, sys_epoll_pwait);
         X64_SYSCALL(283, sys_timerfd_create);
+        X64_SYSCALL(288, sys_accept4);
         X64_SYSCALL(290, sys_eventfd2);
         X64_SYSCALL(291, sys_epoll_create);
         X64_SYSCALL(292, sys_dup3);
@@ -430,8 +435,12 @@ static syscall_t lookup_syscall_x86_64(addr_t syscall_num) {
         X64_SYSCALL(316, sys_renameat2);
         X64_SYSCALL(318, sys_getrandom);
         X64_SYSCALL(319, syscall_silent_stub);
+        X64_SYSCALL(324, syscall_silent_stub);
         X64_SYSCALL(332, sys_statx);
         X64_SYSCALL(377, sys_copy_file_range);
+        X64_SYSCALL(425, syscall_silent_stub);
+        X64_SYSCALL(426, syscall_silent_stub);
+        X64_SYSCALL(427, syscall_silent_stub);
         X64_SYSCALL(439, syscall_silent_stub);
         default:
             return NULL;

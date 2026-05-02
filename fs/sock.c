@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 #include "kernel/calls.h"
+#include "kernel/fs.h"
 #include "fs/fd.h"
 #include "fs/inode.h"
 #include "fs/path.h"
@@ -13,6 +14,7 @@
 #include "debug.h"
 
 #define SOCKET_TYPE_MASK 0xf
+#define SOCKET_TYPE_FLAGS (SOCK_NONBLOCK_|SOCK_CLOEXEC_)
 
 const struct fd_ops socket_fdops;
 
@@ -50,7 +52,19 @@ static void strace_dns_packet(const char *op, const void *packet, size_t len) {
 #endif
 }
 
-static fd_t sock_fd_create(int sock_fd, int domain, int type, int protocol) {
+static int sock_fd_flags_from_type(int type) {
+    if (type & ~(SOCKET_TYPE_MASK|SOCKET_TYPE_FLAGS))
+        return -1;
+
+    int flags = 0;
+    if (type & SOCK_NONBLOCK_)
+        flags |= O_NONBLOCK_;
+    if (type & SOCK_CLOEXEC_)
+        flags |= O_CLOEXEC_;
+    return flags;
+}
+
+static fd_t sock_fd_create(int sock_fd, int domain, int type, int protocol, int flags) {
     struct fd *fd = adhoc_fd_create(&socket_fdops);
     if (fd == NULL)
         return _ENOMEM;
@@ -63,11 +77,19 @@ static fd_t sock_fd_create(int sock_fd, int domain, int type, int protocol) {
         cond_init(&fd->socket.unix_got_peer);
         list_init(&fd->socket.unix_scm);
     }
-    return f_install(fd, type & ~SOCKET_TYPE_MASK);
+    int err = fd_setflags(fd, flags);
+    if (err < 0) {
+        fd_close(fd);
+        return err;
+    }
+    return f_install(fd, flags);
 }
 
 int_t sys_socket(dword_t domain, dword_t type, dword_t protocol) {
     STRACE("socket(%d, %d, %d)", domain, type, protocol);
+    int fd_flags = sock_fd_flags_from_type(type);
+    if (fd_flags < 0)
+        return _EINVAL;
     int real_domain = sock_family_to_real(domain);
     if (real_domain < 0)
         return _EINVAL;
@@ -76,7 +98,7 @@ int_t sys_socket(dword_t domain, dword_t type, dword_t protocol) {
         return _EINVAL;
 
     // this hack makes mtr work
-    if (type == SOCK_RAW_ && protocol == IPPROTO_RAW)
+    if ((type & SOCKET_TYPE_MASK) == SOCK_RAW_ && protocol == IPPROTO_RAW)
         protocol = IPPROTO_ICMP;
 
     int sock = socket(real_domain, real_type, protocol);
@@ -84,7 +106,7 @@ int_t sys_socket(dword_t domain, dword_t type, dword_t protocol) {
         return errno_map();
 
 #ifdef __APPLE__
-    if (domain == AF_INET_ && type == SOCK_DGRAM_) {
+    if (domain == AF_INET_ && (type & SOCKET_TYPE_MASK) == SOCK_DGRAM_) {
         // in some cases, such as ICMP, datagram sockets on mac can default to
         // including the IP header like raw sockets
         int one = 1;
@@ -92,7 +114,7 @@ int_t sys_socket(dword_t domain, dword_t type, dword_t protocol) {
     }
 #endif
 
-    fd_t f = sock_fd_create(sock, domain, type, protocol);
+    fd_t f = sock_fd_create(sock, domain, type, protocol, fd_flags);
     if (f < 0)
         close(sock);
     return f;
@@ -428,8 +450,7 @@ int_t sys_listen(fd_t sock_fd, int_t backlog) {
     return err;
 }
 
-int_t sys_accept(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_addr) {
-    STRACE("accept(%d, 0x%x, 0x%x)", sock_fd, sockaddr_addr, sockaddr_len_addr);
+static int_t do_accept(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_addr, int_t flags) {
     struct fd *sock = sock_getfd(sock_fd);
     if (sock == NULL)
         return _EBADF;
@@ -461,7 +482,7 @@ int_t sys_accept(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_addr) {
     }
 
     fd_t client_f = sock_fd_create(client,
-            sock->socket.domain, sock->socket.type, sock->socket.protocol);
+            sock->socket.domain, sock->socket.type, sock->socket.protocol, flags);
     if (client_f < 0)
         close(client);
 
@@ -480,6 +501,18 @@ int_t sys_accept(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_addr) {
     }
 
     return client_f;
+}
+
+int_t sys_accept(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_addr) {
+    STRACE("accept(%d, 0x%x, 0x%x)", sock_fd, sockaddr_addr, sockaddr_len_addr);
+    return do_accept(sock_fd, sockaddr_addr, sockaddr_len_addr, 0);
+}
+
+int_t sys_accept4(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_addr, int_t flags) {
+    STRACE("accept4(%d, 0x%x, 0x%x, %#x)", sock_fd, sockaddr_addr, sockaddr_len_addr, flags);
+    if (flags & ~(SOCK_NONBLOCK_|SOCK_CLOEXEC_))
+        return _EINVAL;
+    return do_accept(sock_fd, sockaddr_addr, sockaddr_len_addr, sock_fd_flags_from_type(flags));
 }
 
 static void copy_unix_name(char *sockaddr, dword_t *sockaddr_len, struct fd *sock) {
@@ -554,6 +587,9 @@ int_t sys_getpeername(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_ad
 
 int_t sys_socketpair(dword_t domain, dword_t type, dword_t protocol, addr_t sockets_addr) {
     STRACE("socketpair(%d, %d, %d, 0x%x)", domain, type, protocol, sockets_addr);
+    int fd_flags = sock_fd_flags_from_type(type);
+    if (fd_flags < 0)
+        return _EINVAL;
     int real_domain = sock_family_to_real(domain);
     if (real_domain < 0)
         return _EINVAL;
@@ -562,18 +598,18 @@ int_t sys_socketpair(dword_t domain, dword_t type, dword_t protocol, addr_t sock
         return _EINVAL;
 
     int sockets[2];
-    int err = socketpair(domain, type, protocol, sockets);
+    int err = socketpair(real_domain, real_type, protocol, sockets);
     if (err < 0)
         return errno_map();
 
     lock(&peer_lock);
     int fake_sockets[2];
-    err = fake_sockets[0] = sock_fd_create(sockets[0], domain, type, protocol);
+    err = fake_sockets[0] = sock_fd_create(sockets[0], domain, type, protocol, fd_flags);
     if (fake_sockets[0] < 0) {
         unlock(&peer_lock);
         goto close_sockets;
     }
-    err = fake_sockets[1] = sock_fd_create(sockets[1], domain, type, protocol);
+    err = fake_sockets[1] = sock_fd_create(sockets[1], domain, type, protocol, fd_flags);
     if (fake_sockets[1] < 0) {
         unlock(&peer_lock);
         goto close_fake_0;
